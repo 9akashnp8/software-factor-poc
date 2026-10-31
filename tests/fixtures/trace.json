@@ -1,0 +1,307 @@
+{
+  "id": "6f4fb634545422426b97b67100b58663",
+  "projectId": "cmsx3x1ok0006qn079tcep7t7",
+  "name": "LangGraph",
+  "timestamp": "2026-10-29T11:59:04.929Z",
+  "userId": "qa.user@example.com",
+  "sessionId": "11c9970b-7dd3-4bf4-9b1f-97c5d851e90b",
+  "input": {"query": "what is my mobile number"},
+  "output": {
+    "query": "what is my mobile number",
+    "classification": "employee_records",
+    "standalone_query": "What is my mobile number?",
+    "answer": [{"type": "text", "text": "Your mobile number is **abc123**.", "index": 0}]
+  },
+  "metadata": {
+    "thread_id": "11c9970b-7dd3-4bf4-9b1f-97c5d851e90b",
+    "resourceAttributes": {"telemetry.sdk.language": "python"},
+    "scope": {"name": "langfuse-sdk", "attributes": {"public_key": "pk-lf-test"}}
+  },
+  "latency": 2.118,
+  "htmlPath": "/project/cmsx3x1ok0006qn079tcep7t7/traces/6f4fb634545422426b97b67100b58663",
+  "totalCost": 0,
+  "observations": [
+    {
+      "id": "1e59d34995159fde",
+      "startTime": "2026-10-29T11:59:05.533Z",
+      "parentObservationId": "9068a5672e87f2e8",
+      "type": "AGENT",
+      "name": "route_to_agents",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"query": "what is my mobile number", "classification": "employee_records"},
+      "output": {"node": "employee_records", "arg": {"query": "what is my mobile number"}, "timeout": null},
+      "metadata": {"langgraph_node": "classify", "resourceAttributes": {"telemetry.sdk.language": "python"}}
+    },
+    {
+      "id": "11f971b3549a33db",
+      "startTime": "2026-10-29T11:59:06.561Z",
+      "parentObservationId": "ab4de2f703620df1",
+      "type": "GENERATION",
+      "name": "ChatOpenAI",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": [
+        {"role": "system", "content": "# CPCGPT - Employee Records Agent\nAlways call the matching tool before answering."},
+        {"role": "user", "content": "what is my mobile number\n\nReply in English, the language of this question."},
+        {
+          "role": "assistant",
+          "content": [{"type": "tool_call", "id": "call_ebe1", "name": "get_employee_personal_details", "args": {}}],
+          "tool_calls": [{"name": "get_employee_personal_details", "args": {}, "id": "call_ebe1", "type": "tool_call"}]
+        },
+        {
+          "role": "tool",
+          "content": "{\"employee_number\": \"401\", \"name\": \"Edward_401 Miller Paul Dawson\", \"department\": \"Private Marine Center\", \"mobile\": \"abc123\", \"work_phone\": \"82909776\", \"email\": \"test@abc.com\"}",
+          "tool_call_id": "call_ebe1"
+        },
+        {
+          "role": "tool",
+          "content": {"type": "function", "function": {"name": "get_employee_personal_details", "description": "Get the current personal information.", "parameters": {"properties": {}, "type": "object"}}}
+        },
+        {
+          "role": "tool",
+          "content": {"type": "function", "function": {"name": "search_organization_structure", "description": "Look up the organization structure.", "parameters": {"properties": {}, "type": "object"}}}
+        }
+      ],
+      "output": {"role": "assistant", "content": [{"type": "text", "text": "Your mobile number is **abc123**.", "index": 0}]},
+      "metadata": {"langgraph_node": "model", "ls_model_name": "Qwen/Qwen3.6-35B-A3B"},
+      "model": "Qwen/Qwen3.6-35B-A3B",
+      "modelParameters": {"temperature": 0},
+      "promptId": "402e4e95-97c3-47d4-9de7-aa359db9f882",
+      "promptName": "awp/self_service_agents/employee_records_agent",
+      "promptVersion": 8,
+      "latency": 0.479,
+      "usage": {"unit": "TOKENS", "input": 0, "output": 0, "total": 0}
+    },
+    {
+      "id": "e07af1cc6bce0a24",
+      "startTime": "2026-10-29T11:59:06.134Z",
+      "parentObservationId": "0ab12506010b7d53",
+      "type": "TOOL",
+      "name": "get_employee_personal_details",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {},
+      "output": {
+        "content": "{\"employee_number\": \"401\", \"name\": \"Edward_401 Miller Paul Dawson\", \"department\": \"Private Marine Center\", \"mobile\": \"abc123\", \"work_phone\": \"82909776\", \"email\": \"test@abc.com\"}",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "tool",
+        "name": "get_employee_personal_details",
+        "tool_call_id": "call_ebe1",
+        "status": "success"
+      },
+      "metadata": {"langgraph_node": "tools", "tool_call_id": "call_ebe1"}
+    },
+    {
+      "id": "f429b95d2f6d2ac0",
+      "startTime": "2026-10-29T11:59:05.531Z",
+      "parentObservationId": "19fdf83eb2d4e9f8",
+      "type": "CHAIN",
+      "name": "RunnableLambda",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {
+        "content": [{"type": "text", "text": "{\"standalone_query\": \"What is my mobile number?\", \"classification\": \"employee_records\"}"}],
+        "response_metadata": {"finish_reason": "stop"},
+        "id": "lc_run--classify",
+        "type": "ai"
+      },
+      "output": {"standalone_query": "What is my mobile number?", "classification": "employee_records"},
+      "metadata": {"langgraph_node": "classify"}
+    },
+    {
+      "id": "64f19d40ad0df385",
+      "startTime": "2026-10-29T11:59:05.565Z",
+      "parentObservationId": "5107d1d972f12e30",
+      "type": "GENERATION",
+      "name": "ChatOpenAI",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": [
+        {"role": "system", "content": "# CPCGPT - Employee Records Agent\nAlways call the matching tool before answering."},
+        {"role": "user", "content": "what is my mobile number\n\nReply in English, the language of this question."},
+        {
+          "role": "tool",
+          "content": {"type": "function", "function": {"name": "get_employee_personal_details", "description": "Get the current personal information.", "parameters": {"properties": {}, "type": "object"}}}
+        },
+        {
+          "role": "tool",
+          "content": {"type": "function", "function": {"name": "search_organization_structure", "description": "Look up the organization structure.", "parameters": {"properties": {}, "type": "object"}}}
+        }
+      ],
+      "output": {
+        "role": "assistant",
+        "content": [{"type": "tool_call", "id": "call_ebe1", "name": "get_employee_personal_details", "args": {}}],
+        "tool_calls": [{"name": "get_employee_personal_details", "args": {}, "id": "call_ebe1", "type": "tool_call"}]
+      },
+      "metadata": {"langgraph_node": "model"},
+      "model": "Qwen/Qwen3.6-35B-A3B",
+      "modelParameters": {"temperature": 0},
+      "promptName": "awp/self_service_agents/employee_records_agent",
+      "promptVersion": 8
+    },
+    {
+      "id": "c3614dcb59dae1ae",
+      "startTime": "2026-10-29T11:59:04.929Z",
+      "parentObservationId": null,
+      "type": "CHAIN",
+      "name": "LangGraph",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"query": "what is my mobile number"},
+      "output": {
+        "query": "what is my mobile number",
+        "classification": "employee_records",
+        "standalone_query": "What is my mobile number?",
+        "answer": [{"type": "text", "text": "Your mobile number is **abc123**.", "index": 0}]
+      },
+      "metadata": {"ls_integration": "langgraph"}
+    },
+    {
+      "id": "5107d1d972f12e30",
+      "startTime": "2026-10-29T11:59:05.554Z",
+      "parentObservationId": "5df2ec7284a67e1d",
+      "type": "CHAIN",
+      "name": "model",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"messages": [{"content": "what is my mobile number", "type": "human"}]},
+      "output": [
+        {
+          "update": {
+            "messages": [
+              {
+                "content": [{"type": "tool_call", "id": "call_ebe1", "name": "get_employee_personal_details", "args": {}}],
+                "response_metadata": {"finish_reason": "tool_calls", "model_name": "Qwen/Qwen3.6-35B-A3B"},
+                "type": "ai",
+                "id": "lc_run--first-call"
+              }
+            ]
+          }
+        }
+      ],
+      "metadata": {"langgraph_node": "model"}
+    },
+    {
+      "id": "ab4de2f703620df1",
+      "startTime": "2026-10-29T11:59:06.559Z",
+      "parentObservationId": "5df2ec7284a67e1d",
+      "type": "CHAIN",
+      "name": "model",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"messages": []},
+      "output": [
+        {
+          "update": {
+            "messages": [
+              {
+                "content": [{"type": "text", "text": "Your mobile number is **abc123**.", "index": 0}],
+                "response_metadata": {"finish_reason": "stop", "model_name": "Qwen/Qwen3.6-35B-A3B"},
+                "type": "ai",
+                "id": "lc_run--second-call"
+              }
+            ]
+          }
+        }
+      ],
+      "metadata": {"langgraph_node": "model"}
+    },
+    {
+      "id": "1979ccd047068046",
+      "startTime": "2026-10-29T11:59:05.535Z",
+      "parentObservationId": "c3614dcb59dae1ae",
+      "type": "CHAIN",
+      "name": "employee_records",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"query": "what is my mobile number"},
+      "output": {"answer": [{"type": "text", "text": "Your mobile number is **abc123**.", "index": 0}]},
+      "metadata": {"langgraph_node": "employee_records"}
+    },
+    {
+      "id": "0ab12506010b7d53",
+      "startTime": "2026-10-29T11:59:06.133Z",
+      "parentObservationId": "5df2ec7284a67e1d",
+      "type": "CHAIN",
+      "name": "tools",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": [{"name": "get_employee_personal_details", "args": {}, "id": "call_ebe1", "type": "tool_call"}],
+      "output": {"messages": [{"content": "{}", "type": "tool", "tool_call_id": "call_ebe1", "status": "success"}]},
+      "metadata": {"langgraph_node": "tools"}
+    },
+    {
+      "id": "19fdf83eb2d4e9f8",
+      "startTime": "2026-10-29T11:59:04.944Z",
+      "parentObservationId": "9068a5672e87f2e8",
+      "type": "CHAIN",
+      "name": "RunnableSequence",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"chat_history": [], "attachment_manifest": "", "user_query": "what is my mobile number"},
+      "output": {"standalone_query": "What is my mobile number?", "classification": "employee_records"},
+      "metadata": {"langgraph_node": "classify"}
+    },
+    {
+      "id": "5df2ec7284a67e1d",
+      "startTime": "2026-10-29T11:59:05.548Z",
+      "parentObservationId": "1979ccd047068046",
+      "type": "CHAIN",
+      "name": "LangGraph",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"messages": []},
+      "output": {"messages": []},
+      "metadata": {"langgraph_node": "employee_records"}
+    },
+    {
+      "id": "9068a5672e87f2e8",
+      "startTime": "2026-10-29T11:59:04.933Z",
+      "parentObservationId": "c3614dcb59dae1ae",
+      "type": "CHAIN",
+      "name": "classify",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"query": "what is my mobile number"},
+      "output": {"classification": "employee_records", "standalone_query": "What is my mobile number?"},
+      "metadata": {"langgraph_node": "classify"}
+    },
+    {
+      "id": "bae02b8798c0df69",
+      "startTime": "2026-10-29T11:59:04.949Z",
+      "parentObservationId": "19fdf83eb2d4e9f8",
+      "type": "GENERATION",
+      "name": "ChatOpenAI",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": [
+        {"role": "system", "content": "# CPCGPT - Classifier Agent\nChoose the one agent best placed to handle the query."},
+        {"role": "user", "content": "what is my mobile number"}
+      ],
+      "output": {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "{\"standalone_query\": \"What is my mobile number?\", \"classification\": \"employee_records\"}", "index": 0}],
+        "additional_kwargs": {"parsed": {"standalone_query": "What is my mobile number?", "classification": "employee_records"}, "refusal": null}
+      },
+      "metadata": {"langgraph_node": "classify"},
+      "model": "Qwen/Qwen3.6-35B-A3B",
+      "modelParameters": {"temperature": 0},
+      "promptName": "awp/classifier",
+      "promptVersion": 19
+    },
+    {
+      "id": "3de49f3d0084ed75",
+      "startTime": "2026-10-29T11:59:04.945Z",
+      "parentObservationId": "19fdf83eb2d4e9f8",
+      "type": "CHAIN",
+      "name": "ChatPromptTemplate",
+      "level": "DEFAULT",
+      "statusMessage": null,
+      "input": {"chat_history": [], "user_query": "what is my mobile number"},
+      "output": {"messages": [{"content": "# CPCGPT - Classifier Agent", "type": "system"}]},
+      "metadata": {"langgraph_node": "classify"}
+    }
+  ]
+}

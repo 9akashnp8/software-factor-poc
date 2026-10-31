@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Issues{% endblock %}
+
+{% block content %}
+    <style>
+        .issue-list h1 { margin: 0 0 24px; }
+        .issue-list li { gap: 12px; padding: 14px 16px; margin-bottom: 12px; }
+        .issue-list li a { font-weight: 600; }
+        .issue-list li p { margin: 0 0 0 auto; color: #666; font-size: 0.9em; }
+    </style>
+
+    <div class="issue-list">
+    <h1>Current Issues</h1>
+
+    {% if issues %}
+        <ul>
+            {% for issue in issues %}
+                <li><span>🐛</span>
+                    <p>{{ identifier }}</p>
+                    <a href="{{ url_for('issue_detail', issue_id=issue.issue_id) }}">
+                        {{ issue.issue_id }}
+                    </a>
+                    <p>{{issue.status}}</p>
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p style="color: #888;">No Issue yet worked on.</p>
+    {% endif %}
+    </div>
+{% endblock %}

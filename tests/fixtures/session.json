@@ -1,0 +1,34 @@
+{
+  "id": "11c9970b-7dd3-4bf4-9b1f-97c5d851e90b",
+  "createdAt": "2026-10-29T11:59:08.036Z",
+  "projectId": "cmsx3x1ok0006qn079tcep7t7",
+  "environment": "default",
+  "traces": [
+    {
+      "id": "819d229b9bf4e71e46e230520dd13072",
+      "name": "ChatOpenAI",
+      "timestamp": "2026-10-29T11:59:05.561Z",
+      "userId": "qa.user@example.com",
+      "sessionId": "11c9970b-7dd3-4bf4-9b1f-97c5d851e90b",
+      "input": [
+        {"role": "system", "content": "You write short titles for chat conversations."},
+        {"role": "user", "content": "what is my mobile number"}
+      ],
+      "output": {"role": "assistant", "content": "User's mobile number"}
+    },
+    {
+      "id": "6f4fb634545422426b97b67100b58663",
+      "name": "LangGraph",
+      "timestamp": "2026-10-29T11:59:04.929Z",
+      "userId": "qa.user@example.com",
+      "sessionId": "11c9970b-7dd3-4bf4-9b1f-97c5d851e90b",
+      "input": {"query": "what is my mobile number"},
+      "output": {
+        "query": "what is my mobile number",
+        "classification": "employee_records",
+        "standalone_query": "What is my mobile number?",
+        "answer": [{"type": "text", "text": "Your mobile number is **abc123**.", "index": 0}]
+      }
+    }
+  ]
+}
