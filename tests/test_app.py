@@ -140,3 +140,16 @@ def test_retry_requeues_an_issue_that_failed_before_planning(client):
 def test_pages_show_rate_limit_pause(client, ws):
     store.pause_until(time.time() + 600)
     assert "Rate limited" in client.get("/", headers=AUTH).get_data(as_text=True)
+
+
+def test_release_queues_the_teardown(client, ws):
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Release" in page
+    client.post("/issue/issue-1/release", headers=AUTH, data={"csrf_token": csrf_token(client)})
+    assert store.get_issue("issue-1")["status"] == store.RELEASE_QUEUED
+
+
+def test_plan_page_warns_about_overlapping_work(client, ws, monkeypatch):
+    monkeypatch.setattr(web, "overlaps", lambda issue: [("BEI-2", store.PR_OPENED, ["apps/api/router.py"])])
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Likely to conflict" in page and "BEI-2" in page and "apps/api/router.py" in page

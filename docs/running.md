@@ -16,15 +16,21 @@ Work a person is waiting on goes first:
 
 1. Approved plans, to implement.
 2. Plans sent back for rework.
-3. New bugs to triage, oldest first. A new bug also needs a free slot.
+3. Opened PRs that need an update (see below), and issues you released.
+4. New bugs to triage, oldest first. A new bug also needs a free slot, and waits while
+   `SF_MAX_PLANS_IN_REVIEW` (3) plans are being written, reworked or waiting for your review.
 
-Every `SF_INGEST_SECONDS` it queues Todo bugs labelled Bug that it hasn't seen before.
-Every `SF_MERGE_POLL_SECONDS` it checks the PRs it opened, and cleans up after the merged ones.
+Every `SF_INGEST_SECONDS` it queues Todo bugs labelled Bug that it hasn't seen before, and
+finished ones (merged or released) that QA moved back to Todo. Every `SF_MERGE_POLL_SECONDS`
+it checks the PRs it opened.
 
 ```
 queued → gathering-context → gathered-context (planning) → plan-generated-for-review
   approve → plan-approved-queued → plan-approved-agent-working → agent-work-completed → pr-opened → merged
   rework  → plan-rework-queued → plan-rework-requested-agent-planning → plan-generated-for-review
+pr-opened → pr-update-queued → pr-updating-agent-working → pr-opened   (conflicts, failed build)
+merged or released, back in Todo → queued                             (triaged again with history)
+queued / plan-generated-for-review / needs-attention → release-queued → releasing → released
 anything → needs-attention (the reason is on the issue page)
 ```
 
@@ -53,7 +59,42 @@ The worker drops the issue's databases, flushes its Redis DB, removes the worktr
 deletes the branch locally and on origin. It then frees the slot, marks the issue
 `merged` and moves Linear to In Review. If a step fails, the issue needs attention, keeps
 its slot, and the remaining steps are left for you. An abandoned PR needs attention and
-is left as it is.
+is left as it is, until you release it.
+
+## PRs that conflict or fail their build
+
+Parallel fixes can touch the same code, so whichever PR merges second may conflict, or merge
+cleanly and still break the build. Two fixes that each add an Alembic migration are the
+usual case: git sees no conflict, but `alembic upgrade` then finds two heads.
+
+The worker reads each open PR from Azure DevOps. If its merge status is `conflicts`, or the
+newest build of its merge ref (`refs/pull/<id>/merge`, the PR combined with the latest
+base) failed, the issue goes back to its agent with the reason, and with the build's
+errors for a failed build. The agent resumes its implementation session, merges
+`origin/dev` in (a merge, not a rebase, so the push needs no force and review comments
+stay attached), resolves the conflicts, adds an Alembic merge migration if there are two
+heads, fixes the build, runs the tests and commits. The worker then pushes to the same PR.
+
+Each conflict (a pair of source and target commits) and each failed build is acted on
+once. After `SF_MAX_UPDATE_ROUNDS` (3) rounds for one PR, or when the agent leaves the
+merge unresolved, the issue needs attention.
+
+When you review a plan, the page warns if the files it names are also in another issue's
+plan or branch. It's a warning only: approving both is fine.
+
+## Releasing an issue
+
+**Release** (on queued, planned and needs-attention issues) gives up on an issue. The
+worker tears down what it holds, as after a merge, and marks it `released`. Linear and any
+PR are left as they are. Use it for an abandoned PR, or a bug you decide not to fix. If QA
+later moves the issue back to Todo, it's triaged again.
+
+## Bugs that come back
+
+When a merged or released issue shows up in Todo again, the fix didn't hold. The worker
+moves its plan, report and review into `previous-attempt/` in the issue's workspace and
+queues it for triage. The new planning run sees the earlier plan, report and PR link, and
+is asked to find out why that fix didn't work before planning again.
 
 ## Rate limits and restarts
 

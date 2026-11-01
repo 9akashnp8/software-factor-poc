@@ -47,6 +47,10 @@ REVIEW_MODEL = os.getenv("SF_REVIEW_MODEL", "sonnet")
 MAX_CONCURRENT_RUNS = _int("SF_MAX_CONCURRENT_RUNS", 2)
 INGEST_SECONDS = _int("SF_INGEST_SECONDS", 300)
 MERGE_POLL_SECONDS = _int("SF_MERGE_POLL_SECONDS", 600)
+# New bugs wait in the queue while this many plans are written, reworked or awaiting review
+MAX_PLANS_IN_REVIEW = _int("SF_MAX_PLANS_IN_REVIEW", 3)
+# Times an opened PR goes back to its agent for conflicts or a failed build before needing attention
+MAX_UPDATE_ROUNDS = _int("SF_MAX_UPDATE_ROUNDS", 3)
 # Rate-limited runs go back on the queue this many times before needing attention
 MAX_ATTEMPTS = _int("SF_MAX_ATTEMPTS", 3)
 

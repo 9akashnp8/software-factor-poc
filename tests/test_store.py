@@ -50,9 +50,9 @@ def test_runs_record_result():
 
 def test_allowed_actions_need_a_plan_and_session():
     ws = seed_issue(store.PLAN_READY)
-    assert store.allowed_actions(store.get_issue("issue-1")) == []
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["release"]
     (ws / "plan.md").write_text("# Plan")
-    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework"]
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "release"]
     store.transition("issue-1", store.PR_OPENED)
     assert store.allowed_actions(store.get_issue("issue-1")) == []
 
@@ -151,9 +151,9 @@ def test_worker_restart_requeues_orphans_and_closes_their_runs():
 
 def test_retry_is_offered_only_without_a_plan():
     ws = seed_issue(store.NEEDS_ATTENTION)
-    assert store.allowed_actions(store.get_issue("issue-1")) == ["retry"]
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["retry", "release"]
     (ws / "plan.md").write_text("# Plan")
-    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework"]
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "release"]
 
 
 def test_older_databases_gain_the_new_columns():
@@ -163,3 +163,21 @@ def test_older_databases_gain_the_new_columns():
     conn.close()
     store.enqueue_new("issue-1", "BEI-1")
     assert store.get_issue("issue-1")["attempts"] == 0
+
+
+def test_triage_waits_while_review_is_full(monkeypatch):
+    monkeypatch.setattr(config, "MAX_PLANS_IN_REVIEW", 2)
+    seed_issue(store.PLAN_READY, issue_id="p1", identifier="BEI-1", slot=1)
+    seed_issue(store.REWORKING, issue_id="p2", identifier="BEI-2", slot=2)
+    seed_issue(store.IMPLEMENT_QUEUED, issue_id="i1", identifier="BEI-3", slot=3)
+    store.enqueue_new("t1", "BEI-4")
+
+    # Approved work isn't held back by the cap; new triage is
+    assert store.claim_next() == ("i1", "implement")
+    assert store.claim_next() is None
+    store.transition("p1", store.IMPLEMENT_QUEUED)
+    assert store.plans_in_review() == 1
+    assert store.claim_next() == ("p1", "implement")
+    assert store.claim_next() == ("t1", "triage")
+    # The plan being written counts too, so a second worker slot can't overshoot
+    assert store.plans_in_review() == 2

@@ -118,6 +118,37 @@ REWORK_PROMPT = (
     "for review:\n\n{feedback}"
 )
 
+UPDATE_PROMPT = """
+Your pull request needs an update before it can merge:
+
+<pr_problem>
+{problem}
+</pr_problem>
+
+1. Merge the latest base branch into yours: `git merge origin/{base}`. It has just been
+   fetched. Merge, don't rebase: the branch is already pushed and reviewed.
+2. Resolve any conflicts so that both your fix and the changes on {base} keep working.
+   Other fixes may have touched the same code; keep their behaviour, don't revert it.
+3. If both sides added Alembic migrations, run `uv run alembic heads` in apps/api. With more
+   than one head, add a merge migration (`uv run alembic merge heads -m "merge heads"`).
+4. If a build failure is listed above, find and fix its cause.
+5. Run the relevant tests and commit. Do not push.
+
+End with a short report: what conflicted or failed, and how you resolved it.
+"""
+
+# The text under "Previous attempt" in a reopened issue's planning prompt
+PREVIOUS_ATTEMPT = """<previous_attempt>
+This bug was worked on before{pr} and QA has moved it back to Todo, so that fix didn't
+work or didn't cover the whole problem. Find out why before planning again; don't repeat it.
+
+Earlier plan:
+{plan}
+
+Earlier report:
+{report}
+</previous_attempt>"""
+
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -152,7 +183,11 @@ LIMITS = {
     "implement": {"max_turns": 150, "max_budget_usd": 10.0},
     "fix": {"max_turns": 150, "max_budget_usd": 10.0},
     "review": {"max_turns": 60, "max_budget_usd": 3.0},
+    "update": {"max_turns": 100, "max_budget_usd": 6.0},
 }
+
+# Where a reopened issue's earlier plan and report are kept, in its workspace
+PREVIOUS_ATTEMPT_DIR = "previous-attempt"
 
 # The factory pushes after its own checks, so agents may only commit. Deny rules match
 # the command as written ("git -C . push" slips past), so a hook checks the full text too.
@@ -385,6 +420,34 @@ def implementation_options(issue, worktree: Path) -> ClaudeAgentOptions:
     )
 
 
+def archive_attempt(issue_id: str, pr_url: str | None):
+    """Keep a reopened issue's plan and report for its next planning run; clear the rest."""
+    ws = store.issue_dir(issue_id)
+    archive = ws / PREVIOUS_ATTEMPT_DIR
+    archive.mkdir(parents=True, exist_ok=True)
+    for name in ("plan.md", "report.md", "review.md", "review.json"):
+        if (ws / name).exists():
+            shutil.move(ws / name, archive / name)
+    (archive / "pr_url.txt").write_text(pr_url or "", encoding="utf-8")
+
+
+def previous_attempt_section(ws: Path) -> str | None:
+    archive = ws / PREVIOUS_ATTEMPT_DIR
+    if not archive.exists():
+        return None
+
+    def read(name: str, missing: str) -> str:
+        path = archive / name
+        return path.read_text(encoding="utf-8").strip() if path.exists() else missing
+
+    pr_url = read("pr_url.txt", "")
+    return PREVIOUS_ATTEMPT.format(
+        pr=f" in {pr_url}" if pr_url else "",
+        plan=read("plan.md", "(none)"),
+        report=read("report.md", "(none)"),
+    )
+
+
 async def gather_context(bug_info: dict, ws: Path) -> str | None:
     """Write issue.md and return the planning prompt, or None after flagging the issue."""
     issue_id = bug_info["id"]
@@ -438,6 +501,9 @@ async def gather_context(bug_info: dict, ws: Path) -> str | None:
             conversation, base_url=config.LANGFUSE_URL, data_path=str(data_path)
         )
         sections.append(f"<bug_context>\n{langfuse_trace_md}\n</bug_context>")
+
+    if previous := previous_attempt_section(ws):
+        sections.append(previous)
 
     sections.append("Let's plan how to fix the bug described in <issue>")
     bug_prompt = "\n\n".join(sections)
@@ -591,6 +657,52 @@ async def open_pull_request(issue_id: str):
     # The merge watch looks the PR up by the id at the end of its URL
     store.set_fields(issue_id, pr_url=pr_url, pr_id=int(pr_url.rsplit("/", 1)[1]))
     store.transition(issue_id, store.PR_OPENED)
+
+
+def contains(worktree: Path, ref: str) -> bool:
+    """Whether HEAD already has every commit of ref."""
+    return subprocess.run(["git", "-C", str(worktree), "merge-base", "--is-ancestor", ref, "HEAD"]).returncode == 0
+
+
+async def update_pull_request(issue_id: str, owner: str = "cli"):
+    """Have the agent bring an opened PR up to date with the base and fix what the PR watch
+    found (pending_feedback), then push the new commits to the same PR."""
+    issue = store.get_issue(issue_id)
+    worktree = await worktree_for(issue)
+    base = f"origin/{BASE_BRANCH}"
+    try:
+        await anyio.to_thread.run_sync(git, worktree, "fetch", "origin", BASE_BRANCH)
+    except subprocess.CalledProcessError as e:
+        store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"git fetch failed: {e.stderr.strip()}")
+        return
+    head_before = git(worktree, "rev-parse", "HEAD")
+
+    prompt = UPDATE_PROMPT.format(problem=issue["pending_feedback"] or "(no details)", base=BASE_BRANCH)
+    result = await run_agent(issue_id, "update", implementation_options(issue, worktree), prompt, owner)
+    if not run_succeeded(issue_id, "update", result, during=store.UPDATING):
+        return
+
+    if reason := check_branch(worktree):
+        store.transition(issue_id, store.NEEDS_ATTENTION, reason=reason)
+        return
+    # An unresolved merge leaves the base out, and the PR conflicts exactly as before
+    if not contains(worktree, base):
+        store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"The update didn't merge {base} into the branch")
+        return
+    if git(worktree, "rev-parse", "HEAD") == head_before:
+        store.transition(issue_id, store.NEEDS_ATTENTION, reason="The update made no new commit")
+        return
+
+    try:
+        # The branch only gained commits (a merge, fixes), so a plain push updates the PR
+        await anyio.to_thread.run_sync(git, worktree, "push", "origin", branch_name(issue["identifier"]))
+    except subprocess.CalledProcessError as e:
+        store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"git push failed: {e.stderr.strip()}")
+        return
+    report = (result.result or "").strip()
+    store.transition(issue_id, store.PR_OPENED, reason=None)
+    if report:
+        store.add_event(issue_id, f"PR updated: {report[:1000]}")
 
 
 async def review_changes(issue_id: str, worktree: Path, ws: Path, owner: str = "cli") -> dict | None:

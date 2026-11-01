@@ -10,6 +10,7 @@ from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from software_factory import store
+from software_factory.overlap import overlaps
 
 load_dotenv()
 
@@ -80,12 +81,15 @@ def issue_home():
 def issue_detail(issue_id):
     issue = _issue_or_404(issue_id)
     plan = _read(issue_id, "plan.md")
+    actions = store.allowed_actions(issue)
 
     return render_template(
         "issue_detail.html",
         issue=issue,
         html_content=render_md(plan) if plan else None,
-        actions=store.allowed_actions(issue),
+        actions=actions,
+        # Only worth the git calls while the plan can still be approved
+        overlaps=overlaps(issue) if "approve" in actions else [],
         runs=store.runs(issue_id),
         events=store.events(issue_id),
     )
@@ -129,3 +133,7 @@ def rework_plan(issue_id: str):
 @app.route("/issue/<issue_id>/retry", methods=["POST"])
 def retry_triage(issue_id: str):
     return _queue(issue_id, "retry")
+
+@app.route("/issue/<issue_id>/release", methods=["POST"])
+def release_issue(issue_id: str):
+    return _queue(issue_id, "release")

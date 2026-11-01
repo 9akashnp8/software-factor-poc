@@ -1,8 +1,9 @@
 """The one process that runs agents.
 
 It queues new Todo bugs from Linear, runs at most config.MAX_CONCURRENT_RUNS agents at a
-time from the queue in SQLite, holds off while a rate limit is in force, and cleans up
-after merged PRs. The web app only moves issues into the queued statuses.
+time from the queue in SQLite, and holds off while a rate limit is in force. It watches
+the PRs it opened: merged ones are cleaned up, and ones that conflict or fail their build
+go back to their agent. The web app only moves issues into the queued statuses.
 """
 
 import argparse
@@ -13,7 +14,7 @@ from collections.abc import Awaitable, Callable
 import anyio
 import httpx
 
-from software_factory import cleanup, config, store
+from software_factory import cleanup, config, pull_requests, store
 from software_factory.linear import LinearError, list_todo_bugs
 
 # By full name: the package's `main` attribute is this module's entry point, not the module
@@ -24,18 +25,24 @@ DISPATCH_SECONDS = 5
 
 
 async def ingest() -> list[str]:
-    """Queue Todo bugs the factory hasn't seen. Returns the new identifiers."""
+    """Queue Todo bugs the factory hasn't seen, and finished ones QA moved back to Todo.
+
+    Returns the queued identifiers.
+    """
     try:
         bugs = await list_todo_bugs()
     except (LinearError, httpx.HTTPError) as e:
         print(f"Couldn't list Linear issues: {e}")
         return []
+    queued = []
     # Oldest first: the queue serves issues in the order they were added
-    queued = [
-        bug["identifier"]
-        for bug in sorted(bugs, key=lambda b: b.get("createdAt") or "")
-        if store.enqueue_new(bug["id"], bug["identifier"], bug["title"], bug.get("url"))
-    ]
+    for bug in sorted(bugs, key=lambda b: b.get("createdAt") or ""):
+        if store.enqueue_new(bug["id"], bug["identifier"], bug["title"], bug.get("url")):
+            queued.append(bug["identifier"])
+        elif previous := store.reopen(bug["id"]):
+            # Back in Todo after a merge or a release: the fix didn't hold, so keep what was tried
+            pipeline.archive_attempt(bug["id"], previous["pr_url"])
+            queued.append(f"{bug['identifier']} (reopened)")
     if queued:
         print(f"Queued {', '.join(queued)}")
     return queued
@@ -46,6 +53,10 @@ async def run_job(issue_id: str, job: str):
         await pipeline.triage_and_plan_issue(issue_id, owner="worker")
     elif job == "implement":
         await pipeline.implement_and_review(issue_id, True, owner="worker")
+    elif job == "update":
+        await pipeline.update_pull_request(issue_id, owner="worker")
+    elif job == "release":
+        await cleanup.release(issue_id)
     else:
         feedback = store.get_issue(issue_id)["pending_feedback"]
         await pipeline.implement_and_review(issue_id, False, feedback, owner="worker")
@@ -96,7 +107,7 @@ async def run_worker():
     print(f"Worker started: up to {config.MAX_CONCURRENT_RUNS} runs at a time")
     async with anyio.create_task_group() as tg:
         tg.start_soon(every, config.INGEST_SECONDS, ingest)
-        tg.start_soon(every, config.MERGE_POLL_SECONDS, cleanup.check_merges)
+        tg.start_soon(every, config.MERGE_POLL_SECONDS, pull_requests.check_pull_requests)
         tg.start_soon(every, DISPATCH_SECONDS, lambda: dispatcher.dispatch(tg))
 
 

@@ -35,7 +35,14 @@ FIXING = "fixing-review-findings"
 READY_FOR_PR = "ready-for-pr"
 WORK_COMPLETED = "agent-work-completed"
 PR_OPENED = "pr-opened"
+# The PR conflicts with the base branch or its build failed; pending_feedback says which
+UPDATE_QUEUED = "pr-update-queued"
+UPDATING = "pr-updating-agent-working"
 MERGED = "merged"
+RELEASE_QUEUED = "release-queued"
+RELEASING = "releasing"
+# Given up on: the worktree, branch and slot are gone, and the PR, if any, is left as it is
+RELEASED = "released"
 NEEDS_ATTENTION = "needs-attention"
 
 # Statuses a reviewer's action may start from, and the queue each action puts the issue
@@ -44,15 +51,20 @@ ACTIONS = {
     "approve": frozenset({PLAN_READY, NEEDS_ATTENTION}),
     "rework": frozenset({PLAN_READY, NEEDS_ATTENTION}),
     "retry": frozenset({NEEDS_ATTENTION}),
+    "release": frozenset({QUEUED, PLAN_READY, NEEDS_ATTENTION}),
 }
-ACTION_QUEUES = {"approve": IMPLEMENT_QUEUED, "rework": REWORK_QUEUED, "retry": QUEUED}
+ACTION_QUEUES = {"approve": IMPLEMENT_QUEUED, "rework": REWORK_QUEUED, "retry": QUEUED, "release": RELEASE_QUEUED}
 
-# What the worker picks up, in priority order: a person is waiting on the first two
+# What the worker picks up, in priority order: a person is waiting on the first four
 JOBS = [
     (IMPLEMENT_QUEUED, IMPLEMENTING, "implement"),
     (REWORK_QUEUED, REWORKING, "rework"),
+    (UPDATE_QUEUED, UPDATING, "update"),
+    (RELEASE_QUEUED, RELEASING, "release"),
     (QUEUED, GATHERING_CONTEXT, "triage"),
 ]
+# A finished issue that's back in Todo in Linear gets triaged again
+REOPENABLE = frozenset({MERGED, RELEASED})
 # Where an issue goes back to when its run is cut off, by the status it was running in
 REQUEUE_TO = {
     GATHERING_CONTEXT: QUEUED,
@@ -63,7 +75,11 @@ REQUEUE_TO = {
     READY_FOR_PR: IMPLEMENT_QUEUED,
     WORK_COMPLETED: IMPLEMENT_QUEUED,
     REWORKING: REWORK_QUEUED,
+    UPDATING: UPDATE_QUEUED,
+    RELEASING: RELEASE_QUEUED,
 }
+# Plans that are, or will soon be, waiting on a person's review
+REVIEW_LOAD = frozenset({GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING})
 # Reaching one of these ends a run of rate-limit retries
 MILESTONES = frozenset({PLAN_READY, PR_OPENED, MERGED})
 
@@ -82,6 +98,9 @@ CREATE TABLE IF NOT EXISTS issues (
     pending_feedback TEXT,
     slot INTEGER UNIQUE,
     attempts INTEGER NOT NULL DEFAULT 0,
+    pr_conflict_key TEXT,
+    pr_build_id INTEGER,
+    update_rounds INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -124,6 +143,9 @@ _ADDED_COLUMNS = {
         "pending_feedback": "TEXT",
         "slot": "INTEGER",
         "attempts": "INTEGER NOT NULL DEFAULT 0",
+        "pr_conflict_key": "TEXT",
+        "pr_build_id": "INTEGER",
+        "update_rounds": "INTEGER NOT NULL DEFAULT 0",
     },
     "runs": {"rate_limited": "INTEGER NOT NULL DEFAULT 0"},
 }
@@ -131,6 +153,7 @@ _ADDED_COLUMNS = {
 ISSUE_FIELDS = {
     "identifier", "title", "url", "session_id", "pr_url", "pr_id",
     "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
+    "pr_conflict_key", "pr_build_id",
 }
 
 
@@ -271,16 +294,31 @@ def _free_slot_number(conn: sqlite3.Connection) -> int | None:
     return next((n for n in range(1, config.SLOT_COUNT + 1) if n not in taken), None)
 
 
+def plans_in_review(conn: sqlite3.Connection | None = None) -> int:
+    """Plans waiting for a person, counting the ones still being written or reworked."""
+    if conn is None:
+        with _db() as conn:
+            return plans_in_review(conn)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM issues WHERE status IN ({','.join('?' * len(REVIEW_LOAD))})",
+        tuple(REVIEW_LOAD),
+    ).fetchone()[0]
+
+
 def claim_next() -> tuple[str, str] | None:
     """Take the next queued issue and move it to its running status.
 
     Returns (issue_id, job), job being "implement", "rework" or "triage", or None when
-    nothing is waiting. Triage also takes a slot, so it waits while every slot is in use.
+    nothing is waiting. Triage also takes a slot, so it waits while every slot is in use,
+    and while config.MAX_PLANS_IN_REVIEW plans are already waiting for a person.
     """
     with _db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         free_slot = _free_slot_number(conn)
+        review_full = plans_in_review(conn) >= config.MAX_PLANS_IN_REVIEW
         for queued, running, job in JOBS:
+            if job == "triage" and review_full:
+                continue
             row = conn.execute(
                 """SELECT id, slot FROM issues WHERE status = ? AND (slot IS NOT NULL OR ?)
                    ORDER BY updated_at, rowid LIMIT 1""",
@@ -298,6 +336,60 @@ def claim_next() -> tuple[str, str] | None:
             return row["id"], job
         conn.execute("ROLLBACK")
         return None
+
+
+def queue_update(issue_id: str, reason: str, **seen) -> bool:
+    """Send an opened PR back to its agent with reason, recording what was seen (seen are PR fields).
+
+    After config.MAX_UPDATE_ROUNDS rounds the issue needs attention instead, so a fix that
+    keeps failing its build doesn't loop. Returns whether it was queued.
+    """
+    if unknown := set(seen) - {"pr_conflict_key", "pr_build_id"}:
+        raise ValueError(f"Unknown PR fields: {sorted(unknown)}")
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT status, update_rounds FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        if row is None or row["status"] != PR_OPENED:
+            conn.execute("ROLLBACK")
+            return False
+        rounds = row["update_rounds"] + 1
+        if rounds > config.MAX_UPDATE_ROUNDS:
+            to_status, flagged = NEEDS_ATTENTION, f"{reason} (after {config.MAX_UPDATE_ROUNDS} update rounds)"
+        else:
+            to_status, flagged = UPDATE_QUEUED, None
+        columns = "".join(f", {name} = ?" for name in seen)
+        conn.execute(
+            f"""UPDATE issues SET status = ?, update_rounds = ?, pending_feedback = ?,
+                    needs_attention_reason = ?, updated_at = ?{columns} WHERE id = ?""",
+            (to_status, rounds, reason, flagged, _now(), *seen.values(), issue_id),
+        )
+        _event(conn, issue_id, PR_OPENED, to_status, "worker", flagged or reason)
+        conn.execute("COMMIT")
+        return to_status == UPDATE_QUEUED
+
+
+def reopen(issue_id: str) -> sqlite3.Row | None:
+    """Queue a finished issue for triage again, e.g. when QA moved it back to Todo.
+
+    Returns the issue as it was, for its PR link, or None if it isn't finished.
+    """
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        before = conn.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        if before is None or before["status"] not in REOPENABLE:
+            conn.execute("ROLLBACK")
+            return None
+        # A new attempt: new session, slot, worktree and PR
+        conn.execute(
+            """UPDATE issues SET status = ?, session_id = NULL, pr_url = NULL, pr_id = NULL,
+                   pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
+                   pending_feedback = NULL, needs_attention_reason = NULL, slot = NULL, updated_at = ?
+               WHERE id = ?""",
+            (QUEUED, _now(), issue_id),
+        )
+        _event(conn, issue_id, before["status"], QUEUED, "worker", "Back in Todo in Linear")
+        conn.execute("COMMIT")
+        return before
 
 
 def free_slot(issue_id: str):
@@ -426,4 +518,6 @@ def allowed_actions(issue: sqlite3.Row) -> list[str]:
         actions += [a for a in ("approve", "rework") if issue["status"] in ACTIONS[a]]
     elif issue["status"] in ACTIONS["retry"]:
         actions.append("retry")
+    if issue["status"] in ACTIONS["release"]:
+        actions.append("release")
     return actions

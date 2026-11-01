@@ -20,8 +20,9 @@ def result(subtype="success", is_error=False, text="done") -> ResultMessage:
     return ResultMessage(subtype=subtype, duration_ms=10, duration_api_ms=10, is_error=is_error, num_turns=3, session_id="s2", total_cost_usd=0.5, result=text)
 
 
-def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None):
-    """Replace ClaudeSDKClient. exit_plan, if given, is sent to the session's callback as ExitPlanMode input."""
+def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=None):
+    """Replace ClaudeSDKClient. exit_plan, if given, is sent to the session's callback as
+    ExitPlanMode input; work, if given, is called as the agent's edits and commits."""
     sessions = []
 
     class FakeClient:
@@ -41,6 +42,8 @@ def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None):
         async def receive_response(self):
             if exit_plan is not None:
                 await self.options.can_use_tool("ExitPlanMode", exit_plan, None)
+            if work is not None:
+                work()
             if error:
                 raise error
             for message in results if results is not None else [result()]:
@@ -328,3 +331,12 @@ def test_agents_get_their_slot_env_and_phase_model(triage, monkeypatch, pr_calls
     implement()
     assert sessions[1].options.model == config.IMPLEMENT_MODEL
     assert sessions[1].options.env == plan_options.env
+
+
+def test_reopened_bug_plans_with_the_previous_attempt(triage, monkeypatch):
+    ws = store.issue_dir("issue-1")
+    (ws / main.PREVIOUS_ATTEMPT_DIR).mkdir(parents=True)
+    (ws / main.PREVIOUS_ATTEMPT_DIR / "plan.md").write_text("# Old plan")
+    sessions = fake_agent(monkeypatch, exit_plan={"plan": "# New plan"})
+    triage(bug())
+    assert "<previous_attempt>" in sessions[0].prompt and "# Old plan" in sessions[0].prompt

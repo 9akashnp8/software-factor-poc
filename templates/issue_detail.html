@@ -32,6 +32,18 @@
         <p style="color: #888; font-style: italic;">No plan yet.</p>
     {% endif %}
 
+    {% if overlaps %}
+    <div style="background: #fff4e5; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px;">
+        <strong>Likely to conflict</strong> with other work in flight. Approving both is fine;
+        the second PR to merge will be sent back to merge the first in.
+        <ul>
+            {% for identifier, status, files in overlaps %}
+            <li>{{ identifier }} ({{ status }}): {{ files | join(', ') }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
     {% if 'approve' in actions %}
     <form method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
@@ -51,6 +63,16 @@
     <form method="post" action="{{ url_for('retry_triage', issue_id=issue.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
         <button type="submit">Retry triage</button>
+    </form>
+    {% endif %}
+
+    {% if 'release' in actions %}
+    <hr>
+    <form method="post" action="{{ url_for('release_issue', issue_id=issue.id) }}"
+          onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear and any PR are left as they are.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <button type="submit">Release</button>
+        <small>Give up on this issue and free its slot.</small>
     </form>
     {% endif %}
 

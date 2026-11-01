@@ -108,3 +108,34 @@ def test_run_job_routes_to_the_pipeline(monkeypatch, job, expected):
     monkeypatch.setattr(worker.pipeline, "implement_and_review", fake_implement)
     anyio.run(worker.run_job, "t1", job)
     assert calls == [expected]
+
+
+def test_finished_bug_back_in_todo_is_triaged_again_with_its_history(monkeypatch):
+    ws = seed_issue(store.MERGED, slot=None, pr_url="https://ado/pullrequest/7", pr_id=7)
+    (ws / "plan.md").write_text("# Old plan")
+    (ws / "report.md").write_text("Root cause: old guess")
+
+    async def back_in_todo():
+        return [{"id": "issue-1", "identifier": "BEI-1", "title": "Grade shows .None"}]
+
+    monkeypatch.setattr(worker, "list_todo_bugs", back_in_todo)
+    assert anyio.run(worker.ingest) == ["BEI-1 (reopened)"]
+
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["pr_url"], issue["session_id"]) == (store.QUEUED, None, None)
+    assert not (ws / "plan.md").exists()
+    section = worker.pipeline.previous_attempt_section(ws)
+    assert "https://ado/pullrequest/7" in section and "# Old plan" in section and "old guess" in section
+    # Already queued: a second poll doesn't reopen it again
+    assert anyio.run(worker.ingest) == []
+
+
+def test_bug_still_in_progress_isnt_reopened(monkeypatch):
+    seed_issue(store.PR_OPENED, pr_id=7)
+
+    async def in_todo():
+        return [{"id": "issue-1", "identifier": "BEI-1", "title": ""}]
+
+    monkeypatch.setattr(worker, "list_todo_bugs", in_todo)
+    assert anyio.run(worker.ingest) == []
+    assert store.get_issue("issue-1")["status"] == store.PR_OPENED
