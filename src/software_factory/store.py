@@ -530,6 +530,16 @@ def events(issue_id: str) -> list[sqlite3.Row]:
         return conn.execute("SELECT * FROM events WHERE issue_id = ? ORDER BY id", (issue_id,)).fetchall()
 
 
+def recent_events(limit: int) -> list[sqlite3.Row]:
+    """The newest events across all issues, with each issue's identifier."""
+    with _db() as conn:
+        return conn.execute(
+            """SELECT e.*, i.identifier FROM events e JOIN issues i ON i.id = e.issue_id
+               ORDER BY e.id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+
 def add_event(issue_id: str, detail: str, actor: str = "worker"):
     """Record something that happened to the issue without changing its status."""
     with _db() as conn:

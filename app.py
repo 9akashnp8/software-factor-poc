@@ -9,7 +9,7 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from software_factory import store
+from software_factory import home, store
 from software_factory.overlap import overlaps
 
 load_dotenv()
@@ -80,7 +80,14 @@ def require_login():
 
 @app.route("/")
 def issue_home():
-    return render_template("issue_list.html", issues=store.list_issues())
+    issues = store.list_issues()
+    return render_template(
+        "issue_list.html",
+        issues=issues,
+        groups=home.build_groups(issues),
+        load=home.load(issues),
+        activity=home.activity(),
+    )
 
 @app.route("/issue/<issue_id>/plan")
 def issue_detail(issue_id):
