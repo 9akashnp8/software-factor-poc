@@ -17,6 +17,8 @@ def workspace(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(store, "WORKSPACE_DIR", root)
     monkeypatch.setattr(store, "DB_PATH", root / "factory.db")
     monkeypatch.setattr(config, "LINEAR_WRITEBACK", False)
+    # Settings from your .env mustn't change what the tests expect
+    monkeypatch.setattr(config, "PUBLIC_URL", "")
     return root
 
 

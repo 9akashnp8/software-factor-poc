@@ -60,20 +60,22 @@ def remove_worktree(identifier: str):
     _git("worktree", "prune")
 
 
-def delete_branches(identifier: str):
+def delete_branches(identifier: str, remote: bool = True):
     branch = branch_name(identifier)
     if _git("branch", "--list", branch).stdout.strip():
         _git("branch", "-D", branch)
     # Azure DevOps deletes the source branch on completion only when asked to
-    if _git("ls-remote", "--heads", "origin", branch).stdout.strip():
+    if remote and _git("ls-remote", "--heads", "origin", branch).stdout.strip():
         _git("push", "origin", "--delete", branch)
 
 
-async def teardown(issue_id: str, final_status: str, why: str) -> bool:
-    """Remove the issue's databases, Redis queue, worktree and branch, then free its slot.
+async def teardown(issue_id: str, final_status: str | None, why: str, delete_remote: bool = False) -> bool:
+    """Remove the issue's databases, Redis queue, worktree and local branch, then free its slot.
 
     Each step runs in order; a failing one flags the issue and keeps its slot. why names
-    the occasion in that flag, e.g. "PR merged". Returns whether every step finished.
+    the occasion in that flag, e.g. "PR merged". With final_status None the status is left
+    for the caller. The remote branch goes only with delete_remote, since an open PR lives
+    on it. Returns whether every step finished.
     """
     issue = store.get_issue(issue_id)
     identifier = issue["identifier"]
@@ -85,7 +87,7 @@ async def teardown(issue_id: str, final_status: str, why: str) -> bool:
     if has_resources:
         steps += [
             ("removing the worktree", lambda: remove_worktree(identifier)),
-            ("deleting the branch", lambda: delete_branches(identifier)),
+            ("deleting the branch", lambda: delete_branches(identifier, remote=delete_remote)),
         ]
 
     for name, step in steps:
@@ -101,12 +103,13 @@ async def teardown(issue_id: str, final_status: str, why: str) -> bool:
     # A later attempt gets a new database, so it must provision again
     (store.issue_dir(issue_id) / ".provisioned").unlink(missing_ok=True)
     store.free_slot(issue_id)
-    store.transition(issue_id, final_status)
+    if final_status is not None:
+        store.transition(issue_id, final_status)
     return True
 
 
 async def cleanup_after_merge(issue_id: str) -> bool:
-    if not await teardown(issue_id, store.MERGED, "PR merged"):
+    if not await teardown(issue_id, store.MERGED, "PR merged", delete_remote=True):
         return False
     await linear.report_state(issue_id, config.LINEAR_MERGED_STATE)
     return True

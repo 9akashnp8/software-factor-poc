@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 import anyio
 import httpx
 
-from software_factory import cleanup, config, pull_requests, store
+from software_factory import cleanup, config, pull_requests, reset, store
 from software_factory.linear import LinearError, list_todo_bugs
 
 # By full name: the package's `main` attribute is this module's entry point, not the module
@@ -111,17 +111,60 @@ async def run_worker():
         tg.start_soon(every, DISPATCH_SECONDS, lambda: dispatcher.dispatch(tg))
 
 
+def reset_command(args) -> int:
+    if args.all and args.issue:
+        print("Pass an issue or --all, not both.")
+        return 2
+    if not args.all and not args.issue:
+        print("Pass an issue (e.g. BEI-12) or --all.")
+        return 2
+    if args.all:
+        unfinished = [i for i in store.list_issues() if i["status"] not in reset.FINISHED]
+        print(
+            f"This starts {len(unfinished)} unfinished issue(s) over: their databases, Redis queues, "
+            "worktrees and local branches are removed, and they're queued for triage again. "
+            "Merged and released issues, Linear and Azure DevOps are left alone."
+        )
+        if not args.yes and input("Type 'reset' to continue: ").strip() != "reset":
+            print("Nothing reset.")
+            return 1
+    try:
+        if args.all:
+            results = anyio.run(reset.reset_all, args.force)
+        else:
+            results = [anyio.run(reset.reset_issue, args.issue, args.to, args.force)]
+    except reset.ResetRefused as e:
+        print(e)
+        return 1
+    print("\n".join(results) or "Nothing to reset.")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="software-factory")
-    parser.add_argument(
-        "command",
-        nargs="?",
-        default="worker",
-        choices=["worker", "ingest"],
-        help="worker: run the queue (default). ingest: queue new Todo bugs once and exit.",
+    commands = parser.add_subparsers(dest="command")
+    commands.add_parser("worker", help="Run the queue (the default)")
+    commands.add_parser("ingest", help="Queue new Todo bugs once and exit")
+    reset_parser = commands.add_parser(
+        "reset",
+        help="Put an issue, or all of them, back to a clean state",
+        description="Start an issue over (triage from scratch), or put it back on plan review.",
     )
+    reset_parser.add_argument("issue", nargs="?", help="The issue's identifier, e.g. BEI-12")
+    reset_parser.add_argument("--all", action="store_true", help="Start every unfinished issue over")
+    reset_parser.add_argument(
+        "--to",
+        choices=["start", "plan"],
+        default="start",
+        help="start: tear down and triage again (default). plan: back to plan review, keeping the worktree.",
+    )
+    reset_parser.add_argument("--force", action="store_true", help="Reset even with a run in progress, after a crash")
+    reset_parser.add_argument("--yes", action="store_true", help="Don't ask before resetting everything")
     args = parser.parse_args()
-    anyio.run(run_worker if args.command == "worker" else ingest)
+
+    if args.command == "reset":
+        raise SystemExit(reset_command(args))
+    anyio.run(ingest if args.command == "ingest" else run_worker)
 
 
 if __name__ == "__main__":
