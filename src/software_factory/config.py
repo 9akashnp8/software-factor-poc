@@ -29,6 +29,9 @@ ADO_REPO_API = os.getenv(
     "https://devops.cpc.gov.ae/tfs/Applications/CPC-DataLakehousePlatform/_apis/git/repositories/agentic-workplace-platform",
 )
 ADO_API_VERSION = "6.0"
+# The pipeline that deploys the base branch on every merge. A merged fix counts as
+# deployed once a run of it queued after the merge succeeds. 0 means there is none.
+DEPLOY_PIPELINE_ID = int(os.getenv("SF_DEPLOY_PIPELINE_ID") or 97)
 
 
 def ado_pat() -> str:
@@ -60,6 +63,9 @@ PUBLIC_URL = os.getenv("SF_PUBLIC_URL", "").rstrip("/")
 LINEAR_TODO_STATE = os.getenv("SF_LINEAR_TODO_STATE", "Todo")
 LINEAR_BUG_LABEL = os.getenv("SF_LINEAR_BUG_LABEL", "Bug")
 LINEAR_IN_PROGRESS_STATE = os.getenv("SF_LINEAR_IN_PROGRESS_STATE", "In Progress")
+# Set when the PR merges and the deploy pipeline hasn't shipped it yet
+LINEAR_PENDING_DEPLOY_STATE = os.getenv("SF_LINEAR_PENDING_DEPLOY_STATE", "Pending Deployment")
+# Set once the fix is deployed (or at merge, without a deploy pipeline), with a comment for QA
 LINEAR_MERGED_STATE = os.getenv("SF_LINEAR_MERGED_STATE", "In Review")
 LINEAR_WRITEBACK = os.getenv("SF_LINEAR_WRITEBACK", "1") != "0"
 

@@ -77,3 +77,11 @@ mutation SetIssueState($id: String!, $stateId: String!) {
   }
 }
 """
+
+COMMENT_MUTATION = """
+mutation CommentOnIssue($id: String!, $body: String!) {
+  commentCreate(input: { issueId: $id, body: $body }) {
+    success
+  }
+}
+"""

@@ -26,16 +26,19 @@ it checks the PRs it opened.
 
 ```
 queued → gathering-context → gathered-context (planning) → plan-generated-for-review
-  approve → plan-approved-queued → plan-approved-agent-working → agent-work-completed → pr-opened → merged
+  approve → plan-approved-queued → plan-approved-agent-working → agent-work-completed → pr-opened
   rework  → plan-rework-queued → plan-rework-requested-agent-planning → plan-generated-for-review
+pr-opened → merged-awaiting-deploy → deployed                         (merged, then a deploy succeeds)
 pr-opened → pr-update-queued → pr-updating-agent-working → pr-opened   (conflicts, failed build)
-merged or released, back in Todo → queued                             (triaged again with history)
+needs-attention → pr-open-queued → agent-work-completed → pr-opened    (Open PR)
+merged, deployed or released, back in Todo → queued                   (triaged again with history)
 queued / plan-generated-for-review / needs-attention → release-queued → releasing → released
 anything → needs-attention (the reason is on the issue page)
 ```
 
-Linear is moved to In Progress when triage starts, and to In Review when the PR merges.
-`SF_LINEAR_WRITEBACK=0` turns this off.
+Linear moves to In Progress when triage starts, to Pending Deployment when the PR merges,
+and to In Review once a deploy ships the fix, with a comment for QA (below).
+`SF_LINEAR_WRITEBACK=0` turns all of this off.
 
 ## Slots
 
@@ -55,11 +58,37 @@ credentials (`LINEAR_API_KEY`, `AZURE_DEVOPS_PAT` and so on) are blanked in it.
 
 ## After a merge
 
-The worker drops the issue's databases, flushes its Redis DB, removes the worktree and
-deletes the branch locally and on origin. It then frees the slot, marks the issue
-`merged` and moves Linear to In Review. If a step fails, the issue needs attention, keeps
-its slot, and the remaining steps are left for you. An abandoned PR needs attention and
-is left as it is, until you release it.
+The worker records the merge commit, marks the issue `merged-awaiting-deploy` and moves
+Linear to Pending Deployment. It then drops the issue's databases, flushes its Redis DB,
+removes the worktree, deletes the branch locally and on origin, and frees the slot. If a
+cleanup step fails, the issue keeps its slot and its status, the failure is on its
+history, and the step is retried on every PR check until it succeeds. An abandoned PR
+needs attention and is left as it is, until you release it.
+
+## Deployment and the QA comment
+
+The deploy pipeline (`SF_DEPLOY_PIPELINE_ID`, 97: `dev-agentic-workplace-platform`) runs
+once for every merge into dev. A fix counts as deployed when a run of it queued after the
+merge succeeds: its own run, or a later one that also contains it. Each failed run is
+recorded once on the issue's history with the line that explains it (a full agent disk,
+an image pull timing out), and the issue keeps waiting for the next deploy.
+
+Once deployed, the issue is marked `deployed`, and Linear gets a comment and moves to In
+Review:
+
+> **Fix deployed to dev** · [PR 5541](…) · [build 8890](…)
+>
+> **Root cause:** …
+>
+> **Fix:** …
+
+The implementing agent writes the root cause and fix for QA when it finishes, in plain
+sentences without code, file names or user data; they're kept in the workspace's
+`qa.json`. Emails and phone numbers are scrubbed again before posting. Issues implemented
+before this existed get the first line only.
+
+With `SF_DEPLOY_PIPELINE_ID=0`, there's no Pending Deployment: the issue is marked
+`merged`, and the comment ("Fix merged into dev") and In Review come at merge.
 
 ## PRs that conflict or fail their build
 

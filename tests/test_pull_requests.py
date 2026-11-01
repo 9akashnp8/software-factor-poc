@@ -63,7 +63,7 @@ def ado(monkeypatch):
 def merged(monkeypatch) -> list:
     calls = []
 
-    async def fake_cleanup(issue_id):
+    async def fake_cleanup(issue_id, merge_commit=None, merged_at=None):
         calls.append(issue_id)
 
     monkeypatch.setattr(pull_requests.cleanup, "cleanup_after_merge", fake_cleanup)
@@ -199,3 +199,20 @@ def test_pat_without_build_scope_still_handles_conflicts(monkeypatch, capsys):
     assert store.get_issue("issue-2")["status"] == store.UPDATE_QUEUED
     assert issue()["status"] == store.PR_OPENED
     assert "Build (Read) scope" in capsys.readouterr().out
+
+
+def test_build_that_failed_before_any_job_reports_its_validation_errors(monkeypatch):
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/timeline"):
+            return httpx.Response(204)
+        return httpx.Response(200, json={"id": 11, "validationResults": [{"result": "error", "message": "/devops/azure-pipelines.yaml: There is not enough space on the disk.\n"}]})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(pull_requests.httpx, "AsyncClient", lambda **kw: real_client(**kw, transport=httpx.MockTransport(handler)))
+    monkeypatch.setenv("AZURE_DEVOPS_PAT", "test-pat")
+
+    async def go():
+        async with pull_requests.ado_client() as client:
+            return await pull_requests.build_failure(client, 11)
+
+    assert anyio.run(go) == "Errors:\n- /devops/azure-pipelines.yaml: There is not enough space on the disk."

@@ -101,17 +101,35 @@ and commit on the current branch. Do not push.
 </review>
 """
 
+# What an implementation run returns. The QA fields go into the Linear comment once the
+# fix is deployed, so they must make sense to someone who doesn't read the code.
+IMPLEMENTATION_RESULT = (
+    "Finish with three fields. report: for the pull request, a short report of the root "
+    "cause, what changed and the tests you ran. root_cause and fix: one or two plain "
+    "sentences each for QA, saying why the bug happened and what now behaves differently, "
+    "with no code, file names or anything copied from <issue> or <bug_context>."
+)
+
 IMPLEMENT_PROMPT = (
     "Plan approved. Implement it, run the relevant tests, and commit on the current branch. "
-    "Do not push or open a PR. End with a short report: root cause, what changed, tests run."
+    "Do not push or open a PR. " + IMPLEMENTATION_RESULT
 )
 
 CONTINUE_PROMPT = (
     "Your previous run was cut off before it finished. Check what is already done "
     "(git status, git log), then continue implementing the approved plan, run the relevant "
-    "tests, and commit on the current branch. Do not push or open a PR. End with a short "
-    "report: root cause, what changed, tests run."
+    "tests, and commit on the current branch. Do not push or open a PR. " + IMPLEMENTATION_RESULT
 )
+
+IMPLEMENTATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "report": {"type": "string"},
+        "root_cause": {"type": "string"},
+        "fix": {"type": "string"},
+    },
+    "required": ["report", "root_cause", "fix"],
+}
 
 REWORK_PROMPT = (
     "Plan rejected. Revise the plan based on this feedback, then present it again "
@@ -420,7 +438,7 @@ def planning_options(issue, worktree: Path, ws: Path, **extra) -> ClaudeAgentOpt
     )
 
 
-def implementation_options(issue, worktree: Path) -> ClaudeAgentOptions:
+def implementation_options(issue, worktree: Path, **extra) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         resume=issue["session_id"],
         model=config.IMPLEMENT_MODEL,
@@ -430,6 +448,7 @@ def implementation_options(issue, worktree: Path) -> ClaudeAgentOptions:
         hooks=NO_PUSH_HOOKS,
         cwd=worktree,
         env=agent_env(issue),
+        **extra,
     )
 
 
@@ -438,7 +457,7 @@ def archive_attempt(issue_id: str, pr_url: str | None):
     ws = store.issue_dir(issue_id)
     archive = ws / PREVIOUS_ATTEMPT_DIR
     archive.mkdir(parents=True, exist_ok=True)
-    for name in ("plan.md", "report.md", "review.md", "review.json"):
+    for name in ("plan.md", "report.md", "qa.json", "review.md", "review.json"):
         if (ws / name).exists():
             shutil.move(ws / name, archive / name)
     (archive / "pr_url.txt").write_text(pr_url or "", encoding="utf-8")
@@ -568,12 +587,24 @@ async def implement_plan(issue_id: str, owner: str = "cli") -> bool:
     worktree = await worktree_for(issue)
     # A run that was cut off (rate limit, worker restart) left work behind to pick up
     prompt = CONTINUE_PROMPT if issue["attempts"] else IMPLEMENT_PROMPT
-    result = await run_agent(issue_id, "implement", implementation_options(issue, worktree), prompt, owner)
+    options = implementation_options(
+        issue, worktree, output_format={"type": "json_schema", "schema": IMPLEMENTATION_SCHEMA}
+    )
+    result = await run_agent(issue_id, "implement", options, prompt, owner)
     if not run_succeeded(issue_id, "implement", result, during=store.IMPLEMENTING):
         return False
-    # Only the implementation's report goes in the PR; rework results stay on their run
-    (store.issue_dir(issue_id) / "report.md").write_text(result.result or "", encoding="utf-8")
+    save_implementation_result(store.issue_dir(issue_id), result)
     return True
+
+
+def save_implementation_result(ws: Path, result: ResultMessage):
+    """report.md for the PR, and qa.json (root cause, fix) for the Linear comment."""
+    output = result.structured_output if isinstance(result.structured_output, dict) else {}
+    # Only the implementation's report goes in the PR; rework results stay on their run
+    (ws / "report.md").write_text(output.get("report") or result.result or "", encoding="utf-8")
+    qa = {key: output[key].strip() for key in ("root_cause", "fix") if (output.get(key) or "").strip()}
+    if qa:
+        (ws / "qa.json").write_text(json.dumps(qa, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 async def fix_review_findings(issue_id: str, review_md: str, owner: str = "cli") -> bool:

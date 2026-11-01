@@ -39,6 +39,9 @@ PR_OPENED = "pr-opened"
 UPDATE_QUEUED = "pr-update-queued"
 UPDATING = "pr-updating-agent-working"
 MERGED = "merged"
+# Merged and cleaned up; waiting for the deploy pipeline to ship it
+DEPLOY_PENDING = "merged-awaiting-deploy"
+DEPLOYED = "deployed"
 # The fix is committed; only the push and the PR are left
 PUBLISH_QUEUED = "pr-open-queued"
 RELEASE_QUEUED = "release-queued"
@@ -74,7 +77,7 @@ JOBS = [
     (QUEUED, GATHERING_CONTEXT, "triage"),
 ]
 # A finished issue that's back in Todo in Linear gets triaged again
-REOPENABLE = frozenset({MERGED, RELEASED})
+REOPENABLE = frozenset({MERGED, DEPLOY_PENDING, DEPLOYED, RELEASED})
 # Where an issue goes back to when its run is cut off, by the status it was running in
 REQUEUE_TO = {
     GATHERING_CONTEXT: QUEUED,
@@ -91,7 +94,7 @@ REQUEUE_TO = {
 # Plans that are, or will soon be, waiting on a person's review
 REVIEW_LOAD = frozenset({GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING})
 # Reaching one of these ends a run of rate-limit retries
-MILESTONES = frozenset({PLAN_READY, PR_OPENED, MERGED})
+MILESTONES = frozenset({PLAN_READY, PR_OPENED, MERGED, DEPLOY_PENDING, DEPLOYED})
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS issues (
@@ -111,6 +114,9 @@ CREATE TABLE IF NOT EXISTS issues (
     pr_conflict_key TEXT,
     pr_build_id INTEGER,
     update_rounds INTEGER NOT NULL DEFAULT 0,
+    merged_at TEXT,
+    merge_commit TEXT,
+    deploy_build_seen INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -156,6 +162,9 @@ _ADDED_COLUMNS = {
         "pr_conflict_key": "TEXT",
         "pr_build_id": "INTEGER",
         "update_rounds": "INTEGER NOT NULL DEFAULT 0",
+        "merged_at": "TEXT",
+        "merge_commit": "TEXT",
+        "deploy_build_seen": "INTEGER",
     },
     "runs": {"rate_limited": "INTEGER NOT NULL DEFAULT 0"},
 }
@@ -163,7 +172,7 @@ _ADDED_COLUMNS = {
 ISSUE_FIELDS = {
     "identifier", "title", "url", "session_id", "pr_url", "pr_id",
     "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
-    "pr_conflict_key", "pr_build_id",
+    "pr_conflict_key", "pr_build_id", "merged_at", "merge_commit", "deploy_build_seen",
 }
 
 
@@ -526,6 +535,16 @@ def add_event(issue_id: str, detail: str, actor: str = "worker"):
     with _db() as conn:
         status = conn.execute("SELECT status FROM issues WHERE id = ?", (issue_id,)).fetchone()["status"]
         _event(conn, issue_id, status, status, actor, detail)
+
+
+def add_event_once(issue_id: str, detail: str, actor: str = "worker"):
+    """add_event, unless the issue's latest event already says the same, e.g. a retried failure."""
+    with _db() as conn:
+        last = conn.execute(
+            "SELECT detail FROM events WHERE issue_id = ? ORDER BY id DESC LIMIT 1", (issue_id,)
+        ).fetchone()
+    if last is None or last["detail"] != detail:
+        add_event(issue_id, detail, actor)
 
 
 def start_run(issue_id: str, phase: str, owner: str) -> int:
