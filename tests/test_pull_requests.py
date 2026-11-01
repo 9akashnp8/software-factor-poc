@@ -29,7 +29,8 @@ def build(build_id=11, result="failed", status="completed", sha=SOURCE) -> dict:
 
 TIMELINE = {
     "records": [
-        {"name": "Run tests", "result": "failed", "issues": [{"type": "error", "message": "test_grades failed"}, {"type": "warning", "message": "slow"}]},
+        {"name": "Run tests", "type": "Task", "result": "failed", "log": {"url": "https://ado/logs/5"}, "issues": [{"type": "error", "message": "Bash exited with code '1'."}, {"type": "warning", "message": "slow"}]},
+        {"name": "Python lint and tests", "type": "Job", "result": "failed", "log": {"url": "https://ado/logs/4"}, "issues": []},
         {"name": "Lint", "result": "succeeded", "issues": [{"type": "error", "message": "ignored"}]},
     ]
 }
@@ -43,6 +44,8 @@ def ado(monkeypatch):
     def handler(request: httpx.Request):
         state["requests"].append(request)
         path = request.url.path
+        if path.startswith("/logs/"):
+            return httpx.Response(200, text="2026-10-19T07:38:40.0143543Z == short test summary info ==\n2026-10-19T07:38:40.0143731Z FAILED apps/api/tests/test_grades.py::test_none\n")
         if path.endswith("/timeline"):
             return httpx.Response(200, json=TIMELINE)
         if path.endswith("/build/builds"):
@@ -122,7 +125,11 @@ def test_failed_build_sends_its_errors_back(ado):
     problem = issue()["pending_feedback"]
     assert issue()["status"] == store.UPDATE_QUEUED
     assert "https://ado/build/11" in problem
-    assert "Run tests: test_grades failed" in problem
+    assert "- Run tests: Bash exited with code '1'." in problem
+    assert "End of the Run tests log" in problem
+    assert "\nFAILED apps/api/tests/test_grades.py::test_none" in problem
+    # Only the task's log: the job's would repeat it
+    assert "Python lint and tests log" not in problem
     assert "slow" not in problem and "ignored" not in problem
 
 
@@ -173,3 +180,22 @@ def test_without_a_pat_nothing_is_checked(ado, monkeypatch, merged):
     monkeypatch.delenv("AZURE_DEVOPS_PAT")
     check()
     assert ado["requests"] == []
+
+
+def test_pat_without_build_scope_still_handles_conflicts(monkeypatch, capsys):
+    monkeypatch.setenv("AZURE_DEVOPS_PAT", "test-pat")
+    seed_issue(store.PR_OPENED, pr_id=7)
+    seed_issue(store.PR_OPENED, issue_id="issue-2", identifier="BEI-2", slot=2, pr_id=8)
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request):
+        if "/_apis/build/" in request.url.path:
+            return httpx.Response(401)
+        conflicted = request.url.path.endswith("/8")
+        return httpx.Response(200, json=pr(merge_status="conflicts" if conflicted else "succeeded"))
+
+    monkeypatch.setattr(pull_requests.httpx, "AsyncClient", lambda **kw: real_client(**kw, transport=httpx.MockTransport(handler)))
+    check()
+    assert store.get_issue("issue-2")["status"] == store.UPDATE_QUEUED
+    assert issue()["status"] == store.PR_OPENED
+    assert "Build (Read) scope" in capsys.readouterr().out

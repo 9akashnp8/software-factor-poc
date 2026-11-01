@@ -1,6 +1,8 @@
 """Watch the PRs the factory opened: clean up after merges, and send PRs that conflict with
 the base branch or fail their build back to their agent."""
 
+import re
+
 import httpx
 
 from software_factory import cleanup, config, store
@@ -8,8 +10,12 @@ from software_factory.utils import ssl_context
 
 # The project's API root; the repo API sits under it at /_apis/git/repositories/<repo>
 ADO_PROJECT_API = config.ADO_REPO_API.split("/_apis/")[0] + "/_apis"
-# Enough of a failed build's errors for the agent to start from
+# Enough of a failed build's errors and logs for the agent to start from
 MAX_BUILD_ERRORS = 20
+MAX_FAILED_LOGS = 2
+LOG_TAIL_LINES = 60
+# Azure Pipelines prefixes every log line with its time
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z ")
 
 
 def ado_client() -> httpx.AsyncClient:
@@ -38,17 +44,31 @@ async def latest_build(client: httpx.AsyncClient, pr_id: int) -> dict | None:
     return builds[0] if builds else None
 
 
-async def build_errors(client: httpx.AsyncClient, build_id: int) -> list[str]:
+async def build_failure(client: httpx.AsyncClient, build_id: int) -> str:
+    """The failed steps' error messages and log tails.
+
+    The messages alone are usually "Bash exited with code '1'"; the test or lint output
+    that explains it is at the end of the step's log.
+    """
     result = await client.get(f"{ADO_PROJECT_API}/build/builds/{build_id}/timeline")
     result.raise_for_status()
+    failed = [r for r in result.json().get("records") or [] if r.get("result") == "failed"]
     errors = [
-        f"{record.get('name')}: {issue.get('message')}"
-        for record in result.json().get("records") or []
-        if record.get("result") == "failed"
+        f"- {record.get('name')}: {issue.get('message')}"
+        for record in failed
         for issue in record.get("issues") or []
         if issue.get("type") == "error"
-    ]
-    return errors[:MAX_BUILD_ERRORS]
+    ][:MAX_BUILD_ERRORS]
+    sections = ["Errors:\n" + ("\n".join(errors) or "(none reported)")]
+
+    # Jobs and phases repeat their tasks' logs; the task is where the output is
+    tasks = [r for r in failed if r.get("type") == "Task" and (r.get("log") or {}).get("url")]
+    for task in tasks[:MAX_FAILED_LOGS]:
+        log = await client.get(task["log"]["url"])
+        log.raise_for_status()
+        tail = [TIMESTAMP_RE.sub("", line) for line in log.text.splitlines()[-LOG_TAIL_LINES:]]
+        sections.append(f"End of the {task.get('name')} log:\n```\n" + "\n".join(tail) + "\n```")
+    return "\n\n".join(sections)
 
 
 def _commit(pr: dict, key: str) -> str | None:
@@ -86,18 +106,15 @@ async def check_pull_request(client: httpx.AsyncClient, issue) -> str | None:
         return None
     if build["id"] == issue["pr_build_id"]:
         return None
-    # A build of an older push says nothing about the branch as it is now
+    # A build of an older push says nothing about the branch as it is now. Not every server
+    # reports the built commit; there, acting once per build id is what keeps a failure
+    # from being sent back again after the agent pushed its fix.
     built_sha = (build.get("triggerInfo") or {}).get("pr.sourceSha")
     if built_sha and source and built_sha != source:
         return None
-    errors = await build_errors(client, build["id"])
+    details = await build_failure(client, build["id"])
     link = ((build.get("_links") or {}).get("web") or {}).get("href", "")
-    details = "\n".join(f"- {e}" for e in errors) or "(the build reported no error messages)"
-    store.queue_update(
-        issue["id"],
-        f"The PR build failed: {link}\nErrors:\n{details}",
-        pr_build_id=build["id"],
-    )
+    store.queue_update(issue["id"], f"The PR build failed: {link}\n\n{details}", pr_build_id=build["id"])
     return "build failed"
 
 
@@ -121,5 +138,14 @@ async def check_pull_requests():
             try:
                 if outcome := await check_pull_request(client, issue):
                     print(f"{issue['identifier']}: PR {issue['pr_id']} {outcome}")
+            except httpx.HTTPStatusError as e:
+                # Merges, abandons and conflicts were already handled; only the build check failed
+                if "/_apis/build/" in e.request.url.path and e.response.status_code in (401, 403):
+                    print(
+                        f"{issue['identifier']}: can't read PR {issue['pr_id']}'s builds. Failed builds go "
+                        "unnoticed until AZURE_DEVOPS_PAT has the Build (Read) scope."
+                    )
+                else:
+                    print(f"{issue['identifier']}: couldn't check PR {issue['pr_id']}: {e}")
             except httpx.HTTPError as e:
                 print(f"{issue['identifier']}: couldn't check PR {issue['pr_id']}: {e}")

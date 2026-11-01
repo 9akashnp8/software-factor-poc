@@ -75,6 +75,10 @@ errors for a failed build. The agent resumes its implementation session, merges
 stay attached), resolves the conflicts, adds an Alembic merge migration if there are two
 heads, fixes the build, runs the tests and commits. The worker then pushes to the same PR.
 
+`AZURE_DEVOPS_PAT` needs **Code (Read & Write)** to open and read PRs, and **Build (Read)**
+to see their builds. Without Build (Read), merges and conflicts are still handled, failed
+builds go unnoticed, and the worker log says so on every check.
+
 Each conflict (a pair of source and target commits) and each failed build is acted on
 once. After `SF_MAX_UPDATE_ROUNDS` (3) rounds for one PR, or when the agent leaves the
 merge unresolved, the issue needs attention.
