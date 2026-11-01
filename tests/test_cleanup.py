@@ -27,35 +27,52 @@ def linear_states(monkeypatch) -> list:
     return moves
 
 
-def test_merge_tears_everything_down_and_frees_the_slot(steps, linear_states):
+def merge():
+    return anyio.run(cleanup.cleanup_after_merge, "issue-1", "merge-sha", "2026-11-01T09:26:17.9652534Z")
+
+
+def test_merge_waits_for_deploy_and_tears_everything_down(steps, linear_states):
     ws = seed_issue(store.PR_OPENED, slot=4, pr_id=7)
     (ws / ".provisioned").write_text("app_bei_1")
-    assert anyio.run(cleanup.cleanup_after_merge, "issue-1")
+    assert merge()
 
     # Merged: the PR is done with its branch, so the remote one goes too
     assert steps == [("drop", "BEI-1"), ("flush", 4), ("worktree", "BEI-1"), ("branch", "BEI-1", True)]
     issue = store.get_issue("issue-1")
-    assert (issue["status"], issue["slot"]) == (store.MERGED, None)
-    assert linear_states == [("issue-1", config.LINEAR_MERGED_STATE)]
+    assert (issue["status"], issue["slot"], issue["merge_commit"]) == (store.DEPLOY_PENDING, None, "merge-sha")
+    assert linear_states == [("issue-1", config.LINEAR_PENDING_DEPLOY_STATE)]
     # A reopened attempt gets a new database, so it must provision again
     assert not (ws / ".provisioned").exists()
 
 
-def test_failed_step_stops_cleanup_and_keeps_the_slot(monkeypatch, steps, linear_states):
+def test_without_a_deploy_pipeline_qa_hears_at_merge(steps, linear_states, monkeypatch):
+    monkeypatch.setattr(config, "DEPLOY_PIPELINE_ID", 0)
+    seed_issue(store.PR_OPENED, slot=4, pr_id=7)
+    assert merge()
+    assert store.get_issue("issue-1")["status"] == store.MERGED
+    assert linear_states == [("issue-1", config.LINEAR_MERGED_STATE)]
+
+
+def test_failed_step_keeps_the_merge_and_the_slot_for_a_retry(monkeypatch, steps, linear_states):
     seed_issue(store.PR_OPENED, slot=4, pr_id=7)
 
     def locked(identifier):
         raise OSError("worktree files are in use")
 
     monkeypatch.setattr(cleanup, "remove_worktree", locked)
-    assert not anyio.run(cleanup.cleanup_after_merge, "issue-1")
+    assert not merge()
 
     assert steps == [("drop", "BEI-1"), ("flush", 4)]
     issue = store.get_issue("issue-1")
-    assert issue["status"] == store.NEEDS_ATTENTION
-    assert issue["needs_attention_reason"] == "PR merged, but cleanup failed at removing the worktree: worktree files are in use"
-    assert issue["slot"] == 4
-    assert linear_states == []
+    # The merge happened whatever cleanup does, so Linear already knows and the status stands
+    assert (issue["status"], issue["slot"]) == (store.DEPLOY_PENDING, 4)
+    assert linear_states == [("issue-1", config.LINEAR_PENDING_DEPLOY_STATE)]
+    detail = store.events("issue-1")[-1]["detail"]
+    assert detail.startswith("PR merged, but cleanup failed at removing the worktree: worktree files are in use")
+
+    # Retried failures aren't recorded twice
+    anyio.run(cleanup.teardown, "issue-1", None, "PR merged", True, False)
+    assert [e["detail"] for e in store.events("issue-1")].count(detail) == 1
 
 
 def test_release_tears_down_and_leaves_linear_alone(steps, linear_states):

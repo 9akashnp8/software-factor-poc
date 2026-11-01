@@ -3,7 +3,13 @@ import os
 import httpx
 
 from software_factory import config, store
-from software_factory.queries import ISSUE_BY_LABEL_QUERY, ISSUE_DETAIL_QUERY, ISSUE_STATES_QUERY, SET_STATE_MUTATION
+from software_factory.queries import (
+    COMMENT_MUTATION,
+    ISSUE_BY_LABEL_QUERY,
+    ISSUE_DETAIL_QUERY,
+    ISSUE_STATES_QUERY,
+    SET_STATE_MUTATION,
+)
 from software_factory.utils import ssl_context
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
@@ -79,3 +85,21 @@ async def report_state(issue_id: str, state_name: str):
         store.add_event(issue_id, f"Linear status set to {state_name}")
     except (LinearError, httpx.HTTPError) as e:
         store.add_event(issue_id, f"Couldn't set the Linear status to {state_name}: {e}")
+
+
+async def comment(issue_id: str, body: str):
+    async with linear_client() as client:
+        data = await linear_query(client, COMMENT_MUTATION, {"id": issue_id, "body": body})
+    if not data["commentCreate"]["success"]:
+        raise LinearError("Linear refused the comment")
+
+
+async def report_comment(issue_id: str, body: str):
+    """comment for the pipeline: a failure is recorded on the issue, never raised."""
+    if not config.LINEAR_WRITEBACK:
+        return
+    try:
+        await comment(issue_id, body)
+        store.add_event(issue_id, "Linear comment posted")
+    except (LinearError, httpx.HTTPError) as e:
+        store.add_event(issue_id, f"Couldn't post the Linear comment: {e}")

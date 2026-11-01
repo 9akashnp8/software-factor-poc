@@ -340,3 +340,23 @@ def test_reopened_bug_plans_with_the_previous_attempt(triage, monkeypatch):
     sessions = fake_agent(monkeypatch, exit_plan={"plan": "# New plan"})
     triage(bug())
     assert "<previous_attempt>" in sessions[0].prompt and "# Old plan" in sessions[0].prompt
+
+
+def test_implementation_keeps_its_report_and_qa_summary_apart(monkeypatch, pr_calls):
+    ws = seed_issue(store.IMPLEMENTING)
+    done = result(text='{"report": "..."}')
+    done.structured_output = {"report": "Root cause: naive UTC times", "root_cause": " Times were read as local time. ", "fix": "Read as UTC."}
+    sessions = fake_agent(monkeypatch, results=[done])
+    implement()
+    assert (ws / "report.md").read_text() == "Root cause: naive UTC times"
+    assert json.loads((ws / "qa.json").read_text()) == {"root_cause": "Times were read as local time.", "fix": "Read as UTC."}
+    assert sessions[0].options.output_format["schema"] == main.IMPLEMENTATION_SCHEMA
+    assert "root_cause and fix" in sessions[0].prompt
+
+
+def test_implementation_without_structured_output_still_reports(monkeypatch, pr_calls):
+    ws = seed_issue(store.IMPLEMENTING)
+    fake_agent(monkeypatch, results=[result(text="Root cause: x")])
+    implement()
+    assert (ws / "report.md").read_text() == "Root cause: x"
+    assert not (ws / "qa.json").exists()
