@@ -1,32 +1,222 @@
 {% extends "base.html" %}
 
 {% block title %}Issues{% endblock %}
+{% block page_class %}wide home{% endblock %}
 
 {% block content %}
     <style>
-        .issue-list h1 { margin: 0 0 24px; }
-        .issue-list li { gap: 12px; padding: 14px 16px; margin-bottom: 12px; }
-        .issue-list li a { font-weight: 600; }
-        .issue-list li p { margin: 0 0 0 auto; color: #666; font-size: 0.9em; }
+        /* One colour family per stage; the label beside every dot says the same in words */
+        .home {
+            --panel: #fff; --line: #e4e4e7; --line2: #ececef; --hover: #fafafb;
+            --text: #18181b; --muted: #5b5b66; --link: #1d4ed8; --fieldline: #d9d9de;
+            --attn: #b42318; --review: #1d4ed8; --run: #6d28d9; --queued: #52525b; --ship: #a15c07; --done: #15803d;
+            color: var(--text); font-size: 13px;
+        }
+        @media (prefers-color-scheme: dark) {
+            body:has(.home) { background: #0c0e12; }
+            .home {
+                --panel: #13161c; --line: #232833; --line2: #1d222b; --hover: #161a21;
+                --text: #e5e7eb; --muted: #9ca3af; --link: #8fb5ff; --fieldline: #2c3340;
+                --attn: #f97066; --review: #7ea8ff; --run: #b49cff; --queued: #a1a1aa; --ship: #f5b544; --done: #4ade80;
+            }
+        }
+        .home a { color: var(--text); text-decoration: none; }
+        .home a:hover { color: var(--link); text-decoration: underline; }
+        .home .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+        .home .muted { color: var(--muted); }
+        .home .k-attn { color: var(--attn); } .home .k-review { color: var(--review); }
+        .home .k-run { color: var(--run); } .home .k-queued { color: var(--queued); }
+        .home .k-ship { color: var(--ship); } .home .k-done { color: var(--done); }
+        .home .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; display: inline-block; }
+        .home .ring { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+        .home .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding: 12px 0 16px; }
+        .home .bar h1 { margin: 0; font-size: 22px; }
+        .home .chips { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
+        .home .chip { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; padding: 6px 10px;
+            border: 1px solid var(--line); border-radius: 6px; background: var(--panel); white-space: nowrap; }
+        .home .chip.warn { color: var(--ship); border-color: color-mix(in srgb, var(--ship) 35%, transparent);
+            background: color-mix(in srgb, var(--ship) 8%, var(--panel)); }
+        .home .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .home .tile { font: inherit; text-align: left; display: flex; flex-direction: column; gap: 6px; padding: 14px 16px;
+            background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--text); }
+        .home .tile:hover { border-color: var(--fieldline); }
+        .home .tile[aria-pressed="true"] { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
+        .home .tile .top { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: var(--text); }
+        .home .tile .n { font-size: 26px; font-weight: 500; line-height: 1.1; }
+        .home .tile .l { font-size: 12px; color: var(--muted); }
+        .home .layout { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+        .home .groups { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+        .home .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+        .home .gh { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; }
+        .home .gh h2 { margin: 0; font-size: 14px; }
+        .home .flag { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500;
+            padding: 3px 8px; border-radius: 999px; background: color-mix(in srgb, currentColor 10%, transparent); }
+        .home .scroll { overflow-x: auto; }
+        .home .rows { min-width: 820px; }
+        .home .tr { display: grid; grid-template-columns: 160px 76px minmax(0, 1fr) 52px 60px 104px; gap: 14px; align-items: center;
+            padding: 0 16px; min-height: 44px; border-top: 1px solid var(--line2); }
+        .home .tr:hover { background: var(--hover); }
+        .home .tr[hidden], .home .box[hidden] { display: none; }
+        .home .st { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+        .home .ell { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .home .title { padding: 6px 0; min-width: 0; }
+        .home .title a { font-weight: 500; }
+        .home .reason { font-size: 11px; margin-top: 2px; }
+        .home .next { font-size: 12px; font-weight: 600; color: var(--link); justify-self: end; white-space: nowrap; }
+        .home .empty { margin: 0; padding: 12px 16px 16px; border-top: 1px solid var(--line2); color: var(--muted); }
+        .home .more { padding: 8px 16px; border-top: 1px solid var(--line2); }
+        .home button.btn, .home input[type="search"] { font: inherit; font-size: 12px; color: var(--text); background: var(--panel);
+            border: 1px solid var(--fieldline); border-radius: 6px; min-height: 36px; padding: 0 12px; }
+        .home button.btn { cursor: pointer; }
+        .home button.btn:hover { background: var(--hover); }
+        .home .side { flex: 1 1 300px; min-width: 0; padding: 14px 16px; }
+        .home .side h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 500; color: var(--muted); }
+        .home .ev { display: grid; grid-template-columns: 44px 8px minmax(0, 1fr); gap: 10px; align-items: baseline;
+            padding: 8px 0; border-top: 1px solid var(--line2); font-size: 12px; line-height: 1.45; }
+        .home .ev .dot { align-self: center; }
     </style>
 
-    <div class="issue-list">
-    <h1>Current Issues</h1>
+    <div class="bar">
+        <h1>Issues</h1>
+        <label for="filter" class="muted">Filter</label>
+        <input id="filter" type="search" class="mono" placeholder="BEI-27, deploy, s05…" autocomplete="off" />
+        <div class="chips">
+            <span class="chip"><span class="dot k-queued"></span>Runs <b class="mono">{{ load.runs }}/{{ load.max_runs }}</b></span>
+            <span class="chip">Slots <b class="mono">{{ load.slots }}/{{ load.max_slots }}</b></span>
+            <span class="chip{% if load.triage_paused %} warn{% endif %}">
+                {% if load.triage_paused %}<span class="dot"></span>{% endif %}
+                Plans in review <b class="mono">{{ load.plans }}/{{ load.max_plans }}</b>{% if load.triage_paused %} · triage paused{% endif %}
+            </span>
+        </div>
+    </div>
 
     {% if issues %}
-        <ul>
-            {% for issue in issues %}
-                <li><span>🐛</span>
-                    <a href="{{ url_for('issue_detail', issue_id=issue.id) }}">
-                        {{ issue.identifier }}
-                    </a>
-                    <span>{{ issue.title }}</span>
-                    <p>{{ issue.status }}</p>
-                </li>
-            {% endfor %}
-        </ul>
-    {% else %}
-        <p style="color: #888;">No Issue yet worked on.</p>
-    {% endif %}
+    <div class="tiles">
+        {% for g in groups %}
+            {% set attn = g.rows | selectattr('kind', 'equalto', 'attn') | list | length %}
+            {% set oldest = g.rows[0].ago if g.rows else '' %}
+            <button type="button" class="tile k-{{ g.kind }}" data-focus="{{ g.key }}" aria-pressed="false">
+                <span class="top"><span class="dot"></span>{{ g.name }}</span>
+                <span class="n mono{% if g.key in ('you', 'ship') and g.rows %} k-{{ g.kind }}{% endif %}">{{ g.rows | length }}{% if g.key == 'run' %}<span class="muted" style="font-size: 16px">/{{ load.max_runs }}</span>{% endif %}</span>
+                <span class="l">
+                    {% if g.key == 'you' %}{{ attn }} blocked · {{ g.rows | length - attn }} to review
+                    {% elif g.key == 'run' %}{{ 'idle' if not g.rows else 'in progress' }}
+                    {% elif g.key == 'queued' %}{% if g.rows %}oldest {{ oldest }}{% else %}none waiting{% endif %}
+                    {% elif g.key == 'ship' %}PR → merge → deploy
+                    {% else %}deployed or released{% endif %}
+                </span>
+            </button>
+        {% endfor %}
     </div>
+
+    <div class="layout">
+        <div class="groups">
+            {% for g in groups %}
+            <section class="box" data-group="{{ g.key }}" data-peek="{{ '' if g.peek is none else g.peek }}">
+                <div class="gh">
+                    <span class="dot k-{{ g.kind }}"></span>
+                    <h2>{{ g.name }}</h2>
+                    <span class="mono muted" data-count>{{ g.rows | length }}</span>
+                    {% if g.hint %}<span class="muted">{{ g.hint }}</span>{% endif %}
+                </div>
+                {% if not g.rows %}
+                    <p class="empty">
+                        {% if g.key == 'run' and load.triage_paused %}Nothing running. Triage is paused while {{ load.plans }} of {{ load.max_plans }} plan-review places are taken: reviewing a plan frees one.
+                        {% else %}Nothing here.{% endif %}
+                    </p>
+                {% else %}
+                <div class="scroll"><div class="rows">
+                    {% for r in g.rows %}
+                    {% set i = r.issue %}
+                    <div class="tr" data-row{% if g.peek is not none and loop.index > g.peek %} hidden data-extra{% endif %}
+                         data-text="{{ (i.identifier ~ ' ' ~ i.title ~ ' ' ~ r.label ~ ' ' ~ (('s%02d' % i.slot) if i.slot else '')) | lower }}">
+                        <span class="st k-{{ r.kind }}"><span class="dot{% if r.kind == 'attn' %} ring{% endif %}"></span>{{ r.label }}</span>
+                        <a class="mono" href="{{ url_for('issue_detail', issue_id=i.id) }}" style="font-weight: 500">{{ i.identifier }}</a>
+                        <div class="title">
+                            <a class="ell" href="{{ url_for('issue_detail', issue_id=i.id) }}">{{ i.title }}</a>
+                            {% if r.reason %}<span class="ell mono reason k-attn">{{ r.reason }}</span>{% endif %}
+                        </div>
+                        <span class="mono muted">{{ ('s%02d' % i.slot) if i.slot else '—' }}</span>
+                        <span class="mono muted" title="{{ i.updated_at }}">{{ r.ago }}</span>
+                        {% if r.next_step %}
+                            <a class="next" href="{{ url_for('issue_detail', issue_id=i.id) }}">{{ r.next_step }} →</a>
+                        {% elif i.pr_url and g.key == 'ship' %}
+                            <a class="next" href="{{ i.pr_url }}" rel="noopener noreferrer">PR ↗</a>
+                        {% else %}<span></span>{% endif %}
+                    </div>
+                    {% endfor %}
+                </div></div>
+                {% if g.peek is not none and g.rows | length > g.peek %}
+                <div class="more"><button type="button" class="btn" data-toggle>Show {{ g.rows | length - g.peek }} more</button></div>
+                {% endif %}
+                {% endif %}
+            </section>
+            {% endfor %}
+        </div>
+
+        <aside class="box side" aria-labelledby="activity">
+            <h2 id="activity">Activity</h2>
+            {% for e in activity %}
+            <div class="ev">
+                <span class="mono muted">{{ e.ago }}</span>
+                <span class="dot k-{{ e.kind }}"></span>
+                <span><a class="mono" href="{{ url_for('issue_detail', issue_id=e.issue_id) }}" style="font-weight: 500">{{ e.identifier }}</a>
+                    <span class="muted">{{ e.text }}</span></span>
+            </div>
+            {% endfor %}
+        </aside>
+    </div>
+
+    <script>
+        // Tiles focus one group, the filter narrows rows, "show more" opens a group's extra rows
+        (function () {
+            const sections = [...document.querySelectorAll('.home [data-group]')];
+            const filter = document.getElementById('filter');
+            const tiles = [...document.querySelectorAll('.home .tile')];
+            let focus = null;
+            const opened = new Set();
+
+            function refresh() {
+                const q = filter.value.trim().toLowerCase();
+                for (const s of sections) {
+                    const key = s.dataset.group;
+                    const rows = [...s.querySelectorAll('[data-row]')];
+                    const showAll = q || focus === key || opened.has(key);
+                    let matches = 0;
+                    for (const r of rows) {
+                        const match = !q || r.dataset.text.includes(q);
+                        if (match) matches++;
+                        r.hidden = !(match && (showAll || !r.hasAttribute('data-extra')));
+                    }
+                    s.hidden = (focus && focus !== key) || (q && rows.length > 0 && matches === 0);
+                    const count = s.querySelector('[data-count]');
+                    if (count) count.textContent = q ? matches + ' of ' + rows.length : rows.length;
+                    const toggle = s.querySelector('[data-toggle]');
+                    if (toggle) {
+                        const extra = rows.filter((r) => r.hasAttribute('data-extra')).length;
+                        toggle.parentElement.hidden = !!q || focus === key;
+                        toggle.textContent = opened.has(key) ? 'Show fewer' : 'Show ' + extra + ' more';
+                    }
+                }
+                for (const t of tiles) t.setAttribute('aria-pressed', String(t.dataset.focus === focus));
+            }
+
+            for (const t of tiles) t.addEventListener('click', () => {
+                focus = focus === t.dataset.focus ? null : t.dataset.focus;
+                refresh();
+            });
+            for (const s of sections) {
+                const toggle = s.querySelector('[data-toggle]');
+                if (toggle) toggle.addEventListener('click', () => {
+                    const key = s.dataset.group;
+                    opened.has(key) ? opened.delete(key) : opened.add(key);
+                    refresh();
+                });
+            }
+            filter.addEventListener('input', refresh);
+        })();
+    </script>
+    {% else %}
+        <p style="color: #888;">No issue yet worked on.</p>
+    {% endif %}
 {% endblock %}

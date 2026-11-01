@@ -10,6 +10,13 @@
         margin: 40px;
         background-color: #fafafa;
       }
+      /* Pages that set page_class to "wide" draw their own surfaces on the page background */
+      .container.wide {
+        max-width: 1360px;
+        background: none;
+        padding: 0;
+        box-shadow: none;
+      }
       .container {
         max-width: 800px;
         margin: 0 auto;
@@ -68,7 +75,7 @@
     </style>
   </head>
   <body>
-    <div class="container">
+    <div class="container {% block page_class %}{% endblock %}">
       {% if paused_until %}
       <p style="background: #fff4e5; padding: 8px 12px; border-radius: 4px;">
         Rate limited: the worker starts no new runs until {{ paused_until }}.
