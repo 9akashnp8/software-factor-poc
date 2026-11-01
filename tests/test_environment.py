@@ -97,7 +97,10 @@ def test_failed_provisioning_is_retried_next_time(target, monkeypatch):
 
 def test_provision_reports_the_script_error(tmp_path, monkeypatch):
     def fake_run(*args, **kwargs):
+        # Workspace members hold the script's dependencies
+        assert args[0][:3] == ["uv", "run", "--all-packages"]
         assert kwargs["env"]["API_DATABASE_DB_NAME"] == "app_bei_1"
+        assert kwargs["env"]["UV_SYSTEM_CERTS"] == "1"
         assert "VIRTUAL_ENV" not in kwargs["env"]
         raise subprocess.CalledProcessError(1, args[0], stderr="pgvector is not installed")
 
