@@ -15,6 +15,7 @@ import anyio
 import httpx
 
 from software_factory import cleanup, config, pull_requests, reset, store
+from software_factory.environment import fetch_base
 from software_factory.linear import LinearError, list_todo_bugs
 
 # By full name: the package's `main` attribute is this module's entry point, not the module
@@ -59,6 +60,8 @@ async def run_job(issue_id: str, job: str):
         await pipeline.update_pull_request(issue_id, owner="worker")
     elif job == "release":
         await cleanup.release(issue_id)
+    elif job == "refresh":
+        await pipeline.refresh_plan(issue_id, owner="worker")
     else:
         feedback = store.get_issue(issue_id)["pending_feedback"]
         await pipeline.implement_and_review(issue_id, False, feedback, owner="worker")
@@ -110,6 +113,8 @@ async def run_worker():
     async with anyio.create_task_group() as tg:
         tg.start_soon(every, config.INGEST_SECONDS, ingest)
         tg.start_soon(every, config.MERGE_POLL_SECONDS, pull_requests.check_pull_requests)
+        # Keeps the plan page's "dev has moved" count current
+        tg.start_soon(every, config.MERGE_POLL_SECONDS, lambda: anyio.to_thread.run_sync(fetch_base))
         tg.start_soon(every, DISPATCH_SECONDS, lambda: dispatcher.dispatch(tg))
 
 

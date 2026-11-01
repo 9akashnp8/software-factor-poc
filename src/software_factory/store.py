@@ -30,6 +30,9 @@ IMPLEMENT_QUEUED = "plan-approved-queued"
 IMPLEMENTING = "plan-approved-agent-working"
 REWORK_QUEUED = "plan-rework-queued"
 REWORKING = "plan-rework-requested-agent-planning"
+# Re-checking a plan in review against the dev it didn't see; it comes back to PLAN_READY
+REFRESH_QUEUED = "plan-refresh-queued"
+REFRESHING = "plan-refresh-agent-planning"
 REVIEWING = "reviewing"
 FIXING = "fixing-review-findings"
 READY_FOR_PR = "ready-for-pr"
@@ -55,6 +58,7 @@ NEEDS_ATTENTION = "needs-attention"
 ACTIONS = {
     "approve": frozenset({PLAN_READY, NEEDS_ATTENTION}),
     "rework": frozenset({PLAN_READY, NEEDS_ATTENTION}),
+    "refresh": frozenset({PLAN_READY}),
     "retry": frozenset({NEEDS_ATTENTION}),
     "release": frozenset({QUEUED, PLAN_READY, NEEDS_ATTENTION}),
     "publish": frozenset({NEEDS_ATTENTION}),
@@ -62,16 +66,18 @@ ACTIONS = {
 ACTION_QUEUES = {
     "approve": IMPLEMENT_QUEUED,
     "rework": REWORK_QUEUED,
+    "refresh": REFRESH_QUEUED,
     "retry": QUEUED,
     "release": RELEASE_QUEUED,
     "publish": PUBLISH_QUEUED,
 }
 
-# What the worker picks up, in priority order: a person is waiting on the first four
+# What the worker picks up, in priority order: a person is waiting on the first five
 JOBS = [
     (IMPLEMENT_QUEUED, IMPLEMENTING, "implement"),
     (PUBLISH_QUEUED, WORK_COMPLETED, "publish"),
     (REWORK_QUEUED, REWORKING, "rework"),
+    (REFRESH_QUEUED, REFRESHING, "refresh"),
     (UPDATE_QUEUED, UPDATING, "update"),
     (RELEASE_QUEUED, RELEASING, "release"),
     (QUEUED, GATHERING_CONTEXT, "triage"),
@@ -88,11 +94,14 @@ REQUEUE_TO = {
     READY_FOR_PR: IMPLEMENT_QUEUED,
     WORK_COMPLETED: PUBLISH_QUEUED,
     REWORKING: REWORK_QUEUED,
+    REFRESHING: REFRESH_QUEUED,
     UPDATING: UPDATE_QUEUED,
     RELEASING: RELEASE_QUEUED,
 }
 # Plans that are, or will soon be, waiting on a person's review
-REVIEW_LOAD = frozenset({GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING})
+REVIEW_LOAD = frozenset(
+    {GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING, REFRESH_QUEUED, REFRESHING}
+)
 # Reaching one of these ends a run of rate-limit retries
 MILESTONES = frozenset({PLAN_READY, PR_OPENED, MERGED, DEPLOY_PENDING, DEPLOYED})
 
@@ -117,6 +126,7 @@ CREATE TABLE IF NOT EXISTS issues (
     merged_at TEXT,
     merge_commit TEXT,
     deploy_build_seen INTEGER,
+    plan_base TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -165,6 +175,8 @@ _ADDED_COLUMNS = {
         "merged_at": "TEXT",
         "merge_commit": "TEXT",
         "deploy_build_seen": "INTEGER",
+        # The dev commit the current plan was written or last re-checked against
+        "plan_base": "TEXT",
     },
     "runs": {"rate_limited": "INTEGER NOT NULL DEFAULT 0"},
 }
@@ -173,6 +185,7 @@ ISSUE_FIELDS = {
     "identifier", "title", "url", "session_id", "pr_url", "pr_id",
     "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
     "pr_conflict_key", "pr_build_id", "merged_at", "merge_commit", "deploy_build_seen",
+    "plan_base",
 }
 
 
@@ -607,7 +620,7 @@ def allowed_actions(issue: sqlite3.Row) -> list[str]:
     has_plan = bool(issue["session_id"]) and (issue_dir(issue["id"]) / "plan.md").exists()
     actions = []
     if has_plan:
-        actions += [a for a in ("approve", "rework") if issue["status"] in ACTIONS[a]]
+        actions += [a for a in ("approve", "rework", "refresh") if issue["status"] in ACTIONS[a]]
     elif issue["status"] in ACTIONS["retry"]:
         actions.append("retry")
     # A successful implementation wrote its report; publishing reuses that commit

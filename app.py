@@ -9,7 +9,7 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from software_factory import store
+from software_factory import dev_changes, store
 from software_factory.overlap import overlaps
 
 load_dotenv()
@@ -95,6 +95,7 @@ def issue_detail(issue_id):
         actions=actions,
         # Only worth the git calls while the plan can still be approved
         overlaps=overlaps(issue) if "approve" in actions else [],
+        dev_moved=dev_changes.summary(issue) if "refresh" in actions else None,
         runs=store.runs(issue_id),
         events=store.events(issue_id),
     )
@@ -134,6 +135,10 @@ def approve_plan(issue_id: str):
 def rework_plan(issue_id: str):
     feedback = request.form.get("feedback", "").strip()
     return _queue(issue_id, "rework", plan_reviewed_by=request.authorization.username, pending_feedback=feedback)
+
+@app.route("/issue/<issue_id>/refresh-plan", methods=["POST"])
+def refresh_plan(issue_id: str):
+    return _queue(issue_id, "refresh")
 
 @app.route("/issue/<issue_id>/retry", methods=["POST"])
 def retry_triage(issue_id: str):

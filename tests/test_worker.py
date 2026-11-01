@@ -93,7 +93,7 @@ def test_ingest_queues_oldest_first(monkeypatch):
     assert store.claim_next() == ("a", "triage")
 
 
-@pytest.mark.parametrize("job, expected", [("triage", ("triage", "t1")), ("implement", ("implement", "t1", True)), ("rework", ("rework", "t1", False, "Check routing"))])
+@pytest.mark.parametrize("job, expected", [("triage", ("triage", "t1")), ("implement", ("implement", "t1", True)), ("rework", ("rework", "t1", False, "Check routing")), ("refresh", ("refresh", "t1"))])
 def test_run_job_routes_to_the_pipeline(monkeypatch, job, expected):
     seed_issue(store.REWORKING, issue_id="t1", pending_feedback="Check routing")
     calls = []
@@ -104,8 +104,12 @@ def test_run_job_routes_to_the_pipeline(monkeypatch, job, expected):
     async def fake_implement(issue_id, approved, feedback=None, owner=None):
         calls.append(("implement", issue_id, approved) if approved else ("rework", issue_id, approved, feedback))
 
+    async def fake_refresh(issue_id, owner):
+        calls.append(("refresh", issue_id))
+
     monkeypatch.setattr(worker.pipeline, "triage_and_plan_issue", fake_triage)
     monkeypatch.setattr(worker.pipeline, "implement_and_review", fake_implement)
+    monkeypatch.setattr(worker.pipeline, "refresh_plan", fake_refresh)
     anyio.run(worker.run_job, "t1", job)
     assert calls == [expected]
 

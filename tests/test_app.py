@@ -90,6 +90,22 @@ def test_rework_with_csrf_token_queues_feedback(client, ws):
     assert (issue["status"], issue["pending_feedback"]) == (store.REWORK_QUEUED, "Check the router")
 
 
+def test_refresh_queues_the_plan_and_hides_approve(client, ws):
+    token = csrf_token(client)
+    client.post("/issue/issue-1/refresh-plan", headers=AUTH, data={"csrf_token": token})
+    assert store.get_issue("issue-1")["status"] == store.REFRESH_QUEUED
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Approve Plan" not in page and "Refresh plan" not in page
+
+
+def test_plan_page_says_when_dev_has_moved(client, ws, monkeypatch):
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Refresh plan" in page and "since this plan was written" not in page
+    monkeypatch.setattr(web.dev_changes, "summary", lambda issue: "2 new merges to dev, including BEI-17")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "<strong>2 new merges to dev, including BEI-17</strong> since this plan was written." in page
+
+
 def test_load_users():
     assert web._load_users("a:scrypt:1$x$y, b:pbkdf2:z,") == {"a": "scrypt:1$x$y", "b": "pbkdf2:z"}
 
