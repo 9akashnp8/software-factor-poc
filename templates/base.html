@@ -34,6 +34,11 @@
   </head>
   <body>
     <div class="container">
+      {% if paused_until %}
+      <p style="background: #fff4e5; padding: 8px 12px; border-radius: 4px;">
+        Rate limited: the worker starts no new runs until {{ paused_until }}.
+      </p>
+      {% endif %}
       {% block content %}
       {% endblock %}
     </div>

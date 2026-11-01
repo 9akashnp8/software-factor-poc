@@ -54,3 +54,26 @@ query IssueContext($id: String!) {
   }
 }
 """
+
+ISSUE_STATES_QUERY = """
+query IssueTeamStates($id: String!) {
+  issue(id: $id) {
+    team {
+      states {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+  }
+}
+"""
+
+SET_STATE_MUTATION = """
+mutation SetIssueState($id: String!, $stateId: String!) {
+  issueUpdate(id: $id, input: { stateId: $stateId }) {
+    success
+  }
+}
+"""
