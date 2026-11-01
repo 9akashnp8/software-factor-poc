@@ -48,8 +48,6 @@ Plans are approved without evidence that the bug happens, and PRs don't show it'
       plan again.
 - [ ] **Duplicate bugs are planned in parallel.** Give the planner the titles and plan
       summaries of issues already in flight, so it can say "same root cause as BEI-12".
-- [ ] **Bring the branch up to date before implementing.** A plan approved after a long
-      review is implemented on an old `dev`; update the branch (it has no commits yet) first.
 - [ ] **Reviewer comments on the PR.** "Changes requested" in Azure DevOps reaches nobody;
       queue an update job with the comments, as conflicts and failed builds do.
 - [ ] **Stop servers agents leave running.** Teardown doesn't stop an app an agent
@@ -76,6 +74,8 @@ Plans are approved without evidence that the bug happens, and PRs don't show it'
       hasn't run in a real implementation yet.
 - [ ] **The full deploy flow:** merge → Pending Deployment → In Review with the comment.
       It can't complete until a dev deploy succeeds.
+- [ ] **Refresh plan.** Not yet run on a real plan. BEI-26 and BEI-27 are in review with
+      BEI-20 and BEI-25 merged since; a refresh of either is the first real test.
 
 ## Before others use the web app
 

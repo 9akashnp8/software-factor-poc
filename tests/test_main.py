@@ -8,7 +8,7 @@ import httpx
 import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, RateLimitEvent, RateLimitInfo, ResultMessage
 
-from conftest import seed_issue
+from conftest import git, seed_issue
 from software_factory import config, store
 
 main = importlib.import_module("software_factory.main")
@@ -78,7 +78,12 @@ def triage(monkeypatch, tmp_path: Path):
         return [dest / f"attachment_{i}.png" for i, _ in enumerate(urls)]
 
     monkeypatch.setattr(main, "download_uploads", fake_download)
-    monkeypatch.setattr(main, "ensure_worktree", lambda _: tmp_path / "worktree")
+    # Triage records the commit the plan is written on
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    git(worktree, "init", "-q")
+    git(worktree, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "base")
+    monkeypatch.setattr(main, "ensure_worktree", lambda _: worktree)
 
     def run(bug_info):
         async def fake_get_issue(_):
@@ -192,6 +197,7 @@ def test_triage_gives_agent_reachable_context_and_saves_plan(triage, monkeypatch
     assert json.loads((ws / "conversation.json").read_text(encoding="utf-8"))["session_id"] == CONVERSATION_ID
     assert issue()["status"] == store.PLAN_READY
     assert sessions[0].options.max_turns == main.LIMITS["plan"]["max_turns"]
+    assert issue()["plan_base"] == git(main.ensure_worktree(None), "rev-parse", "HEAD")
 
 
 def test_planner_ending_without_a_plan_needs_attention(triage, monkeypatch):
@@ -264,6 +270,102 @@ def test_rework_saves_new_plan_without_touching_report(monkeypatch, pr_calls):
     assert (ws / "report.md").read_text() == "old report"
     assert "Check the router" in sessions[0].prompt
     assert sessions[0].options.permission_mode == "plan"
+
+
+# Refreshing a plan in review against the latest dev
+
+
+@pytest.fixture
+def refresh(dev_repo, monkeypatch):
+    """An issue whose plan is being refreshed, its worktree, and a factory fix merged to dev since."""
+    worktree = dev_repo.worktree()
+    base = git(worktree, "rev-parse", "HEAD")
+    ws = seed_issue(store.REFRESHING, plan_base=base)
+    (ws / "plan.md").write_text("# Plan", encoding="utf-8")
+    fix = seed_issue(store.DEPLOY_PENDING, issue_id="bei-17", identifier="BEI-17", slot=None, pr_id=5540)
+    (fix / "qa.json").write_text(json.dumps({"root_cause": "No email check", "fix": "Emails are validated"}))
+    monkeypatch.setattr(main, "ensure_worktree", lambda _: worktree)
+
+    def run():
+        anyio.run(main.refresh_plan, "issue-1")
+
+    run.worktree, run.ws, run.base = worktree, ws, base
+    run.merge = lambda: dev_repo.merge_pr(5540, "BEI-17: Email accepts test@123", ["apps/api/email.py"])
+    return run
+
+
+def last_event() -> str:
+    return store.events("issue-1")[-1]["detail"]
+
+
+def test_refresh_with_no_change_goes_back_to_review_with_the_reason(refresh, monkeypatch):
+    new = refresh.merge()
+    sessions = fake_agent(monkeypatch, results=[result(text="BEI-17 only touched email; the plan still holds.")])
+    refresh()
+    assert git(refresh.worktree, "rev-parse", "HEAD") == new
+    assert (issue()["status"], issue()["plan_base"]) == (store.PLAN_READY, new)
+    assert last_event() == (
+        "Re-checked after 1 new merge to dev, including BEI-17: no change. "
+        "BEI-17 only touched email; the plan still holds."
+    )
+    assert (refresh.ws / "plan.md").read_text(encoding="utf-8") == "# Plan"
+    prompt, options = sessions[0].prompt, sessions[0].options
+    assert "<dev_changes>" in prompt and "Merged PR 5540: BEI-17" in prompt and "Root cause: No email check" in prompt
+    assert f"git diff {refresh.base[:10]}..HEAD" in prompt
+    assert (options.permission_mode, options.resume, options.max_turns) == ("plan", "s", main.LIMITS["refresh"]["max_turns"])
+
+
+def test_refresh_that_revises_the_plan_saves_it(refresh, monkeypatch):
+    new = refresh.merge()
+    fake_agent(monkeypatch, exit_plan={"plan": "# Revised"}, results=[result("error_during_execution", is_error=True, text="")])
+    refresh()
+    assert (issue()["status"], issue()["plan_base"]) == (store.PLAN_READY, new)
+    assert (refresh.ws / "plan.md").read_text(encoding="utf-8") == "# Revised"
+    assert last_event() == "Plan revised after 1 new merge to dev, including BEI-17"
+
+
+def test_refresh_presenting_the_same_plan_counts_as_no_change(refresh, monkeypatch):
+    refresh.merge()
+    fake_agent(monkeypatch, exit_plan={"plan": "# Plan"}, results=[result("error_during_execution", is_error=True, text="")])
+    refresh()
+    assert issue()["status"] == store.PLAN_READY
+    assert last_event() == "Re-checked after 1 new merge to dev, including BEI-17: no change"
+
+
+def test_refresh_that_doesnt_finish_keeps_the_plan_and_its_base(refresh, monkeypatch):
+    refresh.merge()
+    fake_agent(monkeypatch, results=[result("error_max_turns", is_error=True, text="")])
+    refresh()
+    assert (issue()["status"], issue()["plan_base"]) == (store.PLAN_READY, refresh.base)
+    assert last_event().startswith("The re-check didn't finish (error_max_turns")
+
+
+def test_refresh_when_dev_hasnt_moved_runs_no_agent(refresh, monkeypatch):
+    sessions = fake_agent(monkeypatch)
+    refresh()
+    assert sessions == []
+    assert issue()["status"] == store.PLAN_READY
+    assert last_event() == "dev hasn't moved since this plan; nothing to re-check"
+
+
+def test_refresh_leaves_a_worktree_with_uncommitted_files_alone(refresh, monkeypatch):
+    refresh.merge()
+    (refresh.worktree / "scratch.txt").write_text("left by the planner")
+    sessions = fake_agent(monkeypatch)
+    refresh()
+    assert sessions == []
+    assert git(refresh.worktree, "rev-parse", "HEAD") == refresh.base
+    assert issue()["status"] == store.PLAN_READY
+    assert last_event() == "Couldn't update the worktree to the latest dev: uncommitted changes in the worktree: scratch.txt"
+
+
+def test_refresh_refuses_a_branch_with_commits(refresh, monkeypatch):
+    refresh.merge()
+    git(refresh.worktree, "commit", "-q", "--allow-empty", "-m", "fix")
+    sessions = fake_agent(monkeypatch)
+    refresh()
+    assert sessions == []
+    assert last_event() == "Couldn't update the worktree to the latest dev: the branch already has commits"
 
 
 # Rate limits, models and slot environments

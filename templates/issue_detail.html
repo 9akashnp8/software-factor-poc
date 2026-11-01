@@ -44,6 +44,17 @@
     </div>
     {% endif %}
 
+    {% if 'refresh' in actions %}
+    <div style="{% if dev_moved %}background: #fff4e5; {% endif %}padding: 8px 12px; border-radius: 4px; margin-bottom: 12px;">
+        <form method="post" action="{{ url_for('refresh_plan', issue_id=issue.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            {% if dev_moved %}<strong>{{ dev_moved }}</strong> since this plan was written.{% endif %}
+            <button type="submit">Refresh plan</button>
+            <small>Update the worktree to the latest dev and have the planner check whether the plan still holds.</small>
+        </form>
+    </div>
+    {% endif %}
+
     {% if 'approve' in actions %}
     <form method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
