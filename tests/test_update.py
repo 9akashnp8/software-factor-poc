@@ -94,7 +94,8 @@ def test_unresolved_conflict_needs_attention(monkeypatch, repo, pr_waiting):
 
     fake_agent(monkeypatch, work=leave_conflict)
     update()
-    assert store.get_issue("issue-1")["needs_attention_reason"] == "Uncommitted changes left in the worktree"
+    # The conflicted file, and the merge's other files staged alongside it
+    assert store.get_issue("issue-1")["needs_attention_reason"].startswith("Uncommitted changes left in the worktree: fix.txt")
 
 
 def test_failed_update_run_needs_attention_and_pushes_nothing(monkeypatch, repo, pr_waiting):

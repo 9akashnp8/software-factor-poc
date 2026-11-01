@@ -39,6 +39,8 @@ PR_OPENED = "pr-opened"
 UPDATE_QUEUED = "pr-update-queued"
 UPDATING = "pr-updating-agent-working"
 MERGED = "merged"
+# The fix is committed; only the push and the PR are left
+PUBLISH_QUEUED = "pr-open-queued"
 RELEASE_QUEUED = "release-queued"
 RELEASING = "releasing"
 # Given up on: the worktree, branch and slot are gone, and the PR, if any, is left as it is
@@ -52,12 +54,20 @@ ACTIONS = {
     "rework": frozenset({PLAN_READY, NEEDS_ATTENTION}),
     "retry": frozenset({NEEDS_ATTENTION}),
     "release": frozenset({QUEUED, PLAN_READY, NEEDS_ATTENTION}),
+    "publish": frozenset({NEEDS_ATTENTION}),
 }
-ACTION_QUEUES = {"approve": IMPLEMENT_QUEUED, "rework": REWORK_QUEUED, "retry": QUEUED, "release": RELEASE_QUEUED}
+ACTION_QUEUES = {
+    "approve": IMPLEMENT_QUEUED,
+    "rework": REWORK_QUEUED,
+    "retry": QUEUED,
+    "release": RELEASE_QUEUED,
+    "publish": PUBLISH_QUEUED,
+}
 
 # What the worker picks up, in priority order: a person is waiting on the first four
 JOBS = [
     (IMPLEMENT_QUEUED, IMPLEMENTING, "implement"),
+    (PUBLISH_QUEUED, WORK_COMPLETED, "publish"),
     (REWORK_QUEUED, REWORKING, "rework"),
     (UPDATE_QUEUED, UPDATING, "update"),
     (RELEASE_QUEUED, RELEASING, "release"),
@@ -73,7 +83,7 @@ REQUEUE_TO = {
     REVIEWING: IMPLEMENT_QUEUED,
     FIXING: IMPLEMENT_QUEUED,
     READY_FOR_PR: IMPLEMENT_QUEUED,
-    WORK_COMPLETED: IMPLEMENT_QUEUED,
+    WORK_COMPLETED: PUBLISH_QUEUED,
     REWORKING: REWORK_QUEUED,
     UPDATING: UPDATE_QUEUED,
     RELEASING: RELEASE_QUEUED,
@@ -581,6 +591,9 @@ def allowed_actions(issue: sqlite3.Row) -> list[str]:
         actions += [a for a in ("approve", "rework") if issue["status"] in ACTIONS[a]]
     elif issue["status"] in ACTIONS["retry"]:
         actions.append("retry")
+    # A successful implementation wrote its report; publishing reuses that commit
+    if issue["status"] in ACTIONS["publish"] and (issue_dir(issue["id"]) / "report.md").exists():
+        actions.append("publish")
     if issue["status"] in ACTIONS["release"]:
         actions.append("release")
     return actions

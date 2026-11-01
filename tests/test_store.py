@@ -181,3 +181,21 @@ def test_triage_waits_while_review_is_full(monkeypatch):
     assert store.claim_next() == ("t1", "triage")
     # The plan being written counts too, so a second worker slot can't overshoot
     assert store.plans_in_review() == 2
+
+
+def test_open_pr_is_offered_once_the_implementation_reported():
+    ws = seed_issue(store.NEEDS_ATTENTION)
+    (ws / "plan.md").write_text("# Plan")
+    assert "publish" not in store.allowed_actions(store.get_issue("issue-1"))
+    (ws / "report.md").write_text("Root cause: x")
+    assert "publish" in store.allowed_actions(store.get_issue("issue-1"))
+
+
+def test_publish_is_claimed_before_new_triage_and_requeued_as_publish():
+    store.enqueue_new("t1", "BEI-2")
+    seed_issue(store.PUBLISH_QUEUED)
+    assert store.claim_next() == ("issue-1", "publish")
+    assert store.get_issue("issue-1")["status"] == store.WORK_COMPLETED
+    # Cut off mid-push: it goes back to publishing, not to implementing again
+    assert store.requeue("issue-1", "worker restarted")
+    assert store.get_issue("issue-1")["status"] == store.PUBLISH_QUEUED

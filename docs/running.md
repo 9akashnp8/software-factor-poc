@@ -94,6 +94,17 @@ it `released`. Linear and any
 PR are left as they are. Use it for an abandoned PR, or a bug you decide not to fix. If QA
 later moves the issue back to Todo, it's triaged again.
 
+## Open PR
+
+When the implementation succeeded but pushing or opening the PR didn't (a push rejected,
+Azure DevOps unreachable, files left uncommitted), the issue needs attention and offers
+**Open PR**. That pushes the committed fix and opens its PR without running the agent again.
+
+The worktree check counts a file as uncommitted only if its content differs from the
+last commit, or it's untracked. With `core.autocrlf` on, the target's commit hook
+(prettier) rewrites files with LF endings, and `git status` then lists them as modified
+though nothing changed; those don't count.
+
 ## Resetting by hand
 
 When something breaks mid-way and the buttons don't get an issue moving again:

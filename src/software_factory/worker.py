@@ -53,6 +53,8 @@ async def run_job(issue_id: str, job: str):
         await pipeline.triage_and_plan_issue(issue_id, owner="worker")
     elif job == "implement":
         await pipeline.implement_and_review(issue_id, True, owner="worker")
+    elif job == "publish":
+        await pipeline.open_pull_request(issue_id)
     elif job == "update":
         await pipeline.update_pull_request(issue_id, owner="worker")
     elif job == "release":
