@@ -1,5 +1,7 @@
 import json
 import mimetypes
+import os
+import ssl
 from pathlib import Path
 import httpx
 import re
@@ -9,6 +11,18 @@ CONVERSATION_ID_RE = re.compile(
 )
 
 UPLOAD_URL_RE = re.compile(r"https://uploads\.linear\.app/[^\s)\]>\"']+")
+
+
+def ssl_context() -> ssl.SSLContext:
+    """Verify TLS against the system store, which trusts the proxy that re-signs our traffic.
+
+    httpx's default (certifi) doesn't include the proxy's CA. Set SF_CA_BUNDLE to a PEM
+    file with that CA where the system store lacks it, e.g. in WSL or a container.
+    """
+    context = ssl.create_default_context()
+    if ca_bundle := os.getenv("SF_CA_BUNDLE"):
+        context.load_verify_locations(cafile=ca_bundle)
+    return context
 
 
 def extract_conversation_id(text: str) -> str | None:
@@ -23,7 +37,7 @@ def extract_upload_urls(text: str) -> list[str]:
 def download_uploads(urls: list[str], dest: Path, api_key: str) -> list[Path]:
     dest.mkdir(parents=True, exist_ok=True)
     paths = []
-    with httpx.Client(follow_redirects=True, headers={"Authorization": api_key}, verify=False) as client:
+    with httpx.Client(follow_redirects=True, headers={"Authorization": api_key}, verify=ssl_context()) as client:
         for i, url in enumerate(urls):
             resp = client.get(url)
             resp.raise_for_status()

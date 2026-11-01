@@ -1,7 +1,7 @@
 import json
 import os
+import re
 import shutil
-import ssl
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,6 +12,7 @@ import httpx
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookMatcher,
     PermissionResultAllow,
     PermissionResultDeny,
     ResultMessage,
@@ -25,6 +26,7 @@ from software_factory.utils import (
     download_uploads,
     extract_conversation_id,
     extract_upload_urls,
+    ssl_context,
 )
 
 load_dotenv()
@@ -33,7 +35,7 @@ load_dotenv()
 async def list_todo_bugs():
     async with httpx.AsyncClient(
         headers={"Authorization": str(os.getenv("LINEAR_API_KEY"))},
-        verify=False,
+        verify=ssl_context(),
     ) as client:
         result = await client.post(
             "https://api.linear.app/graphql",
@@ -49,7 +51,7 @@ async def list_todo_bugs():
 async def get_issue(issue_id: str):
     async with httpx.AsyncClient(
         headers={"Authorization": str(os.getenv("LINEAR_API_KEY"))},
-        verify=False,
+        verify=ssl_context(),
     ) as client:
         result = await client.post(
             "https://api.linear.app/graphql",
@@ -147,6 +149,42 @@ REVIEW_SCHEMA = {
 
 # Review rounds after the first one, where the implementer fixes blocking findings
 MAX_FIX_ROUNDS = 1
+
+# The factory pushes after its own checks, so agents may only commit. Deny rules match
+# the command as written ("git -C . push" slips past), so a hook checks the full text too.
+PUSH_DENY_RULES = ["Bash(git push *)", "PowerShell(git push *)"]
+PLAN_DISALLOWED_TOOLS = [
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Bash(git commit *)",
+    "Bash(git add *)",
+    "Bash(rm *)",
+    "Bash(mv *)",
+    "Bash(sed -i *)",
+    *PUSH_DENY_RULES,
+]
+# "git" followed by global options (-C <path>, -c <key=value>, --flag) and then push,
+# so "git stash push" is left alone
+GIT_PUSH_RE = re.compile(r"\bgit(?:\.exe)?(?:\s+(?:-[Cc]\s+\S+|-\S+))*\s+[\"']?push\b")
+
+
+async def deny_git_push(input_data, tool_use_id, context):
+    command = input_data.get("tool_input", {}).get("command", "")
+    if GIT_PUSH_RE.search(command):
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "The factory pushes after review. Commit only.",
+            }
+        }
+    return {}
+
+
+NO_PUSH_HOOKS = {
+    "PreToolUse": [HookMatcher(matcher="Bash|PowerShell", hooks=[deny_git_push])]
+}
 
 # Worktree setup
 BASE_BRANCH = "dev"
@@ -321,17 +359,8 @@ async def triage_and_plan_issue(issue_id: str):
             },
             permission_mode="plan",
             # Deny rules run before can_use_tool and the permission mode, so these can't be overridden
-            disallowed_tools=[
-                "Edit",
-                "MultiEdit",
-                "NotebookEdit",
-                "Bash(git commit *)",
-                "Bash(git push *)",
-                "Bash(git add *)",
-                "Bash(rm *)",
-                "Bash(mv *)",
-                "Bash(sed -i *)",
-            ],
+            disallowed_tools=PLAN_DISALLOWED_TOOLS,
+            hooks=NO_PUSH_HOOKS,
             cwd=ensure_worktree(bug_info["identifier"]),
             can_use_tool=can_use_tool,
         )
@@ -379,7 +408,11 @@ async def resume_session(
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     worktree = ensure_worktree(meta["identifier"])
 
-    options = {"permission_mode": "auto", "disallowed_tools": [], "can_use_tool": None}
+    options = {
+        "permission_mode": "auto",
+        "disallowed_tools": PUSH_DENY_RULES,
+        "can_use_tool": None,
+    }
     # Plan Mode restrictions
     if not is_plan_approved:
 
@@ -412,24 +445,18 @@ async def resume_session(
 
         options = {
             "permission_mode": "plan",
-            "disallowed_tools": [
-                "Edit",
-                "MultiEdit",
-                "NotebookEdit",
-                "Bash(git commit *)",
-                "Bash(git push *)",
-                "Bash(git add *)",
-                "Bash(rm *)",
-                "Bash(mv *)",
-                "Bash(sed -i *)",
-            ],
+            "disallowed_tools": PLAN_DISALLOWED_TOOLS,
             "can_use_tool": can_use_tool,
         }
 
     result = None
     async with ClaudeSDKClient(
         options=ClaudeAgentOptions(
-            resume=meta["session_id"], model="sonnet", cwd=worktree, **options
+            resume=meta["session_id"],
+            model="sonnet",
+            cwd=worktree,
+            hooks=NO_PUSH_HOOKS,
+            **options,
         )
     ) as client:
         await client.query(prompt)
@@ -471,11 +498,10 @@ async def create_pull_request(branch: str, title: str, description: str) -> str:
         raise RuntimeError("AZURE_DEVOPS_PAT is not set")
 
     source_ref = f"refs/heads/{branch}"
-    # Verify against the Windows cert store, which is what git's schannel backend trusts
     async with httpx.AsyncClient(
         auth=("", pat),
         params={"api-version": ADO_API_VERSION},
-        verify=ssl.create_default_context(),
+        verify=ssl_context(),
         timeout=30,
     ) as client:
         existing = await client.get(

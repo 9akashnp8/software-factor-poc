@@ -1,6 +1,7 @@
 import httpx
 
 from software_factory.trace_cleaner import MAIN_TRACE_NAMES, select_main_trace_ids
+from software_factory.utils import ssl_context
 
 
 async def fetch_session(client: httpx.AsyncClient, session_id: str) -> dict:
@@ -26,7 +27,7 @@ async def fetch_conversation(
         base_url=base_url,
         headers={"Authorization": f"Basic {encoded_token}"},
         timeout=30,
-        verify=False
+        verify=ssl_context(),
     ) as client:
         session = await fetch_session(client, session_id)
         # The sessions endpoint lists traces without observations, so fetch each turn

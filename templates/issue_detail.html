@@ -27,10 +27,12 @@
 
     {% if issue_status != 'plan-approved-agent-working' %}
     <form method="post" action="{{ url_for('approve_plan', issue_id=issue_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
         <button type="submit">Approve Plan</button>
     </form>
     <hr>
     <form method="post" action="{{ url_for('rework_plan', issue_id=issue_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
         <input name="feedback" placeholder="Rework this plan" required />
         <button type="submit">Rework Plan</button>
     </form>
