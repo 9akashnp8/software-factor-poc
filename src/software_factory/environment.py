@@ -42,6 +42,8 @@ def slot_env(slot: int, identifier: str) -> dict[str, str]:
         "WEB_ORIGIN": f"http://localhost:{web_port}",
         "API_DATABASE_DB_NAME": database_name(identifier),
         "REDIS_DB": str(slot + 1),
+        # uv's bundled certificates don't include the proxy's CA; the system store does
+        "UV_SYSTEM_CERTS": os.environ.get("UV_SYSTEM_CERTS", "1"),
     }
     # Agents inherit the factory's environment; options.env entries override it
     env.update({name: "" for name in config.FACTORY_SECRETS})
@@ -64,8 +66,11 @@ def provision(worktree: Path, env: dict[str, str]):
     # The factory's virtualenv isn't the worktree's
     run_env.pop("VIRTUAL_ENV", None)
     try:
+        # The target is a uv workspace: psycopg and the shared package belong to its
+        # members, which a plain `uv run` at the root doesn't install (its bootstrap
+        # runs `uv sync --all-packages`). This also gives the agent a complete .venv.
         subprocess.run(
-            ["uv", "run", "python", "apps/api/local_init.py"],
+            ["uv", "run", "--all-packages", "python", "apps/api/local_init.py"],
             cwd=worktree,
             env=run_env,
             check=True,
