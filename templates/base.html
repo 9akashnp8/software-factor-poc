@@ -18,17 +18,52 @@
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       }
-      ul {
+      /* The issue list's rows are cards; every other list, plans included, stays a list */
+      .issue-list ul {
         list-style-type: none;
         padding: 0;
       }
-      li {
+      .issue-list li {
         padding: 12px;
         margin-bottom: 8px;
         background: #f4f4f9;
         border-radius: 4px;
         display: flex;
         align-items: center;
+      }
+      .markdown-body {
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+      }
+      .markdown-body li + li,
+      .markdown-body li > ul,
+      .markdown-body li > ol {
+        margin-top: 4px;
+      }
+      .markdown-body code {
+        background: #f4f4f9;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 0.9em;
+      }
+      .markdown-body pre {
+        background: #f4f4f9;
+        padding: 12px;
+        border-radius: 4px;
+        overflow-x: auto;
+      }
+      .markdown-body pre code {
+        background: none;
+        padding: 0;
+      }
+      .markdown-body table {
+        border-collapse: collapse;
+      }
+      .markdown-body th,
+      .markdown-body td {
+        border: 1px solid #ddd;
+        padding: 6px 10px;
+        text-align: left;
       }
     </style>
   </head>

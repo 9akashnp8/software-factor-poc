@@ -162,3 +162,18 @@ def test_open_pr_queues_publishing(client, ws):
     assert "Open PR" in page
     client.post("/issue/issue-1/open-pr", headers=AUTH, data={"csrf_token": csrf_token(client)})
     assert store.get_issue("issue-1")["status"] == store.PUBLISH_QUEUED
+
+
+def test_plans_render_as_commonmark():
+    # As agents write it: a list straight after a paragraph line, nested by two spaces
+    html = str(web.render_md("What the trace shows:\n- **Routing** is fine\n- It needs:\n  - a new row type\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"))
+    assert "<p>What the trace shows:</p>\n<ul>\n<li><strong>Routing</strong> is fine</li>" in html
+    assert "<li>It needs:\n<ul>\n<li>a new row type</li>" in html
+    assert "<table>" in html and "<td>1</td>" in html
+
+
+def test_card_styling_is_scoped_to_the_issue_list(client, ws):
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert ".issue-list li {" in page
+    # A bare li rule would turn every plan bullet into flex columns
+    assert "\n      li {" not in page
