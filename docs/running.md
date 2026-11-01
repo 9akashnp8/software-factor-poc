@@ -89,9 +89,33 @@ plan or branch. It's a warning only: approving both is fine.
 ## Releasing an issue
 
 **Release** (on queued, planned and needs-attention issues) gives up on an issue. The
-worker tears down what it holds, as after a merge, and marks it `released`. Linear and any
+worker tears down what it holds, as after a merge but keeping the remote branch, and marks
+it `released`. Linear and any
 PR are left as they are. Use it for an abandoned PR, or a bug you decide not to fix. If QA
 later moves the issue back to Todo, it's triaged again.
+
+## Resetting by hand
+
+When something breaks mid-way and the buttons don't get an issue moving again:
+
+```
+uv run software-factory reset BEI-12              # start over: triage from scratch
+uv run software-factory reset BEI-12 --to plan    # back to plan review, keeping the worktree
+uv run software-factory reset --all               # start every unfinished issue over
+```
+
+Starting over tears down what the issue holds (databases, Redis DB, worktree, local branch,
+slot), moves its last plan, report and issue context into `reset-<time>/` in its workspace,
+and queues it for triage with a new session. `--to plan` only changes the status, so you
+can approve or rework the same plan again; it needs a plan to go back to.
+
+`--all` asks before it starts, unless you pass `--yes`. It skips merged and released
+issues, and lifts any rate-limit pause.
+
+A reset refuses while an issue has a run in progress: stop the worker first. If the
+worker crashed and left a run open, `--force` closes it. A reset never touches Linear,
+Azure DevOps or a pushed branch. If the issue had an open PR, abandon it and delete its
+remote branch, or the next attempt's push is rejected; the reset says so when it applies.
 
 ## Bugs that come back
 

@@ -12,7 +12,7 @@ def steps(monkeypatch) -> list:
     monkeypatch.setattr(cleanup, "drop_databases", lambda identifier: calls.append(("drop", identifier)))
     monkeypatch.setattr(cleanup, "flush_redis", lambda slot: calls.append(("flush", slot)))
     monkeypatch.setattr(cleanup, "remove_worktree", lambda identifier: calls.append(("worktree", identifier)))
-    monkeypatch.setattr(cleanup, "delete_branches", lambda identifier: calls.append(("branch", identifier)))
+    monkeypatch.setattr(cleanup, "delete_branches", lambda identifier, remote: calls.append(("branch", identifier, remote)))
     return calls
 
 
@@ -32,7 +32,8 @@ def test_merge_tears_everything_down_and_frees_the_slot(steps, linear_states):
     (ws / ".provisioned").write_text("app_bei_1")
     assert anyio.run(cleanup.cleanup_after_merge, "issue-1")
 
-    assert steps == [("drop", "BEI-1"), ("flush", 4), ("worktree", "BEI-1"), ("branch", "BEI-1")]
+    # Merged: the PR is done with its branch, so the remote one goes too
+    assert steps == [("drop", "BEI-1"), ("flush", 4), ("worktree", "BEI-1"), ("branch", "BEI-1", True)]
     issue = store.get_issue("issue-1")
     assert (issue["status"], issue["slot"]) == (store.MERGED, None)
     assert linear_states == [("issue-1", config.LINEAR_MERGED_STATE)]
@@ -61,6 +62,8 @@ def test_release_tears_down_and_leaves_linear_alone(steps, linear_states):
     seed_issue(store.RELEASING, slot=2)
     assert anyio.run(cleanup.release, "issue-1")
     assert [s[0] for s in steps] == ["drop", "flush", "worktree", "branch"]
+    # Released: any PR is left as it is, and it lives on the remote branch
+    assert steps[-1] == ("branch", "BEI-1", False)
     issue = store.get_issue("issue-1")
     assert (issue["status"], issue["slot"]) == (store.RELEASED, None)
     assert linear_states == []

@@ -392,6 +392,64 @@ def reopen(issue_id: str) -> sqlite3.Row | None:
         return before
 
 
+def find_issue(key: str) -> sqlite3.Row | None:
+    """An issue by its Linear identifier (BEI-12, any case) or id."""
+    with _db() as conn:
+        return conn.execute(
+            "SELECT * FROM issues WHERE UPPER(identifier) = UPPER(?) OR id = ?", (key, key)
+        ).fetchone()
+
+
+def open_runs(issue_id: str | None = None) -> list[sqlite3.Row]:
+    """Runs not yet finished, for one issue or all."""
+    with _db() as conn:
+        if issue_id is None:
+            return conn.execute("SELECT * FROM runs WHERE ended_at IS NULL").fetchall()
+        return conn.execute("SELECT * FROM runs WHERE issue_id = ? AND ended_at IS NULL", (issue_id,)).fetchall()
+
+
+def restart(issue_id: str, actor: str) -> bool:
+    """Queue the issue for triage from scratch: no session, slot, PR or retry counts.
+
+    The caller tears down the slot first. Returns whether the issue exists.
+    """
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        before = conn.execute("SELECT status FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        if before is None:
+            conn.execute("ROLLBACK")
+            return False
+        conn.execute(
+            """UPDATE issues SET status = ?, session_id = NULL, pr_url = NULL, pr_id = NULL,
+                   pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
+                   pending_feedback = NULL, needs_attention_reason = NULL, plan_reviewed_by = NULL,
+                   slot = NULL, updated_at = ?
+               WHERE id = ?""",
+            (QUEUED, _now(), issue_id),
+        )
+        _event(conn, issue_id, before["status"], QUEUED, actor, "Reset: starting over")
+        conn.execute("COMMIT")
+        return True
+
+
+def back_to_plan_review(issue_id: str, actor: str) -> bool:
+    """Put the issue back on its plan's review, keeping its worktree, slot and session."""
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        before = conn.execute("SELECT status FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        if before is None:
+            conn.execute("ROLLBACK")
+            return False
+        conn.execute(
+            """UPDATE issues SET status = ?, attempts = 0, update_rounds = 0, pending_feedback = NULL,
+                   needs_attention_reason = NULL, updated_at = ? WHERE id = ?""",
+            (PLAN_READY, _now(), issue_id),
+        )
+        _event(conn, issue_id, before["status"], PLAN_READY, actor, "Reset: back to plan review")
+        conn.execute("COMMIT")
+        return True
+
+
 def free_slot(issue_id: str):
     with _db() as conn:
         conn.execute("UPDATE issues SET slot = NULL, updated_at = ? WHERE id = ?", (_now(), issue_id))
@@ -432,6 +490,11 @@ def pause_until(timestamp: float):
             "ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS REAL), CAST(excluded.value AS REAL))",
             (float(timestamp),),
         )
+
+
+def clear_pause():
+    with _db() as conn:
+        conn.execute("DELETE FROM factory_state WHERE key = 'paused_until'")
 
 
 def paused_until() -> float | None:
