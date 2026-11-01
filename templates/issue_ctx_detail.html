@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}{{ folder_name }} - Issue Context{% endblock %}
+{% block title %}{{ issue.identifier }} - Issue Context{% endblock %}
 
 {% block content %}
-    <p><a href="{{ url_for('issue_detail',issue_id=issue_id) }}">← Back to Issue Plan</a></p>
+    <p><a href="{{ url_for('issue_detail', issue_id=issue.id) }}">← Back to Issue Plan</a></p>
 
-    <h1>Folder Profile: {{ folder_name }}</h1>
+    <h1>Issue context: {{ issue.identifier }}</h1>
     <hr>
 
     {% if html_content %}
@@ -13,7 +13,7 @@
             {{ html_content }}
         </article>
     {% else %}
-        <p style="color: #888; font-style: italic;">No issue.md file found in this folder.</p>
+        <p style="color: #888; font-style: italic;">No issue context gathered yet.</p>
     {% endif %}
 
 {% endblock %}

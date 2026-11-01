@@ -17,11 +17,11 @@
         <ul>
             {% for issue in issues %}
                 <li><span>🐛</span>
-                    <p>{{ identifier }}</p>
-                    <a href="{{ url_for('issue_detail', issue_id=issue.issue_id) }}">
-                        {{ issue.issue_id }}
+                    <a href="{{ url_for('issue_detail', issue_id=issue.id) }}">
+                        {{ issue.identifier }}
                     </a>
-                    <p>{{issue.status}}</p>
+                    <span>{{ issue.title }}</span>
+                    <p>{{ issue.status }}</p>
                 </li>
             {% endfor %}
         </ul>

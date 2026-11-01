@@ -1,41 +1,73 @@
 {% extends "base.html" %}
 
-{% block title %}{{ folder_name }} - Details{% endblock %}
+{% block title %}{{ issue.identifier }} - Details{% endblock %}
 
 {% block content %}
-    <p><a href="{{ url_for('issue_home') }}">← Back to Folders</a></p>
+    <p><a href="{{ url_for('issue_home') }}">← Back to Issues</a></p>
 
-    <h1>Issue: {{ identifier }}</h1>
+    <h1>Issue: {{ issue.identifier }}</h1>
+    <p>{{ issue.title }}{% if issue.url %} · <a href="{{ issue.url }}">Linear</a>{% endif %}</p>
+
+    {% for message in get_flashed_messages() %}
+        <p style="color: #a15c00;">{{ message }}</p>
+    {% endfor %}
+
     <div>
-        <h2>Status: {{ issue_status }}</h2>
-        {% if metadata.status == 'pr-opened' and metadata.pr_url %}
-        <a href="{{ metadata.pr_url }}">PR Link</a>
+        <h2>Status: {{ issue.status }}</h2>
+        {% if issue.status == 'needs-attention' and issue.needs_attention_reason %}
+        <p style="color: #b00020; white-space: pre-wrap;">{{ issue.needs_attention_reason }}</p>
+        {% endif %}
+        {% if issue.pr_url %}
+        <a href="{{ issue.pr_url }}">PR Link</a>
         {% endif %}
     </div>
-    <a href="{{ url_for('issue_context', issue_id=issue_id) }}">View Issue Context</a>
+    <a href="{{ url_for('issue_context', issue_id=issue.id) }}">View Issue Context</a>
     <hr>
-
-
 
     {% if html_content %}
         <article class="markdown-body" style="padding: 20px 0;">
             {{ html_content }}
         </article>
     {% else %}
-        <p style="color: #888; font-style: italic;">No README.md documentation file found in this folder.</p>
+        <p style="color: #888; font-style: italic;">No plan yet.</p>
     {% endif %}
 
-    {% if issue_status != 'plan-approved-agent-working' %}
-    <form method="post" action="{{ url_for('approve_plan', issue_id=issue_id) }}">
+    {% if 'approve' in actions %}
+    <form method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
         <button type="submit">Approve Plan</button>
     </form>
     <hr>
-    <form method="post" action="{{ url_for('rework_plan', issue_id=issue_id) }}">
+    {% endif %}
+    {% if 'rework' in actions %}
+    <form method="post" action="{{ url_for('rework_plan', issue_id=issue.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
         <input name="feedback" placeholder="Rework this plan" required />
         <button type="submit">Rework Plan</button>
     </form>
     {% endif %}
+
+    {% if runs %}
+    <h2>Agent runs</h2>
+    <table>
+        <tr><th>Phase</th><th>Started</th><th>Outcome</th><th>Turns</th><th>Cost</th></tr>
+        {% for run in runs %}
+        <tr>
+            <td>{{ run.phase }}</td>
+            <td>{{ run.started_at }}</td>
+            <td>{% if run.error %}{{ run.error }}{% elif run.ended_at %}{{ run.subtype }}{% else %}running{% endif %}</td>
+            <td>{{ run.num_turns if run.num_turns is not none else '' }}</td>
+            <td>{{ '$%.2f'|format(run.cost_usd) if run.cost_usd is not none else '' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    <h2>History</h2>
+    <ul>
+        {% for event in events %}
+        <li>{{ event.at }} · {{ event.from_status or 'new' }} → {{ event.to_status }}{% if event.actor %} by {{ event.actor }}{% endif %}{% if event.detail %}: {{ event.detail }}{% endif %}</li>
+        {% endfor %}
+    </ul>
 
 {% endblock %}

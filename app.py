@@ -1,17 +1,16 @@
-import json
 import os
 import threading
-from pathlib import Path
 
 import anyio
 import markdown
 import nh3
 from dotenv import load_dotenv
-from flask import Flask, Response, render_template, redirect, url_for, request
+from flask import Flask, Response, abort, flash, render_template, redirect, url_for, request
 from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from software_factory import store
 from software_factory.main import implement_and_review
 
 load_dotenv()
@@ -20,7 +19,6 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY")
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 CSRFProtect(app)
-BUG_WORKSPACE_DIR = Path("./bug_workspace")
 
 
 def _load_users(spec: str) -> dict[str, str]:
@@ -36,21 +34,30 @@ USERS = _load_users(os.getenv("SF_USERS", ""))
 # Checked for unknown users too, so a wrong name takes as long as a wrong password
 _DUMMY_HASH = generate_password_hash("unused")
 
-_running: set[str] = set()
-_lock = threading.Lock()
+# Runs this process started and never finished can't still be going after a restart
+store.reap_interrupted("web")
+
 
 def _worker(issue_id, is_plan_approved, remarks):
-    try:
-        anyio.run(implement_and_review, issue_id, is_plan_approved, remarks)
-    finally:
-        with _lock:
-            _running.discard(issue_id)
+    anyio.run(implement_and_review, issue_id, is_plan_approved, remarks, "web")
 
 
 def render_md(text: str) -> Markup:
     # issue.md holds QA text and users' chat messages, and Markdown passes raw HTML
     # through, so strip anything that could run script before marking it safe
     return Markup(nh3.clean(markdown.markdown(text, extensions=["extra"])))
+
+
+def _read(issue_id: str, name: str) -> str | None:
+    path = store.issue_dir(issue_id) / name
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def _issue_or_404(issue_id: str):
+    issue = store.get_issue(issue_id)
+    if issue is None:
+        abort(404)
+    return issue
 
 
 @app.before_request
@@ -70,93 +77,54 @@ def require_login():
 
 @app.route("/")
 def issue_home():
-    issues = []
-
-    for issue_folder in BUG_WORKSPACE_DIR.iterdir():
-        if not issue_folder.is_dir():
-            continue
-
-        issue_id = issue_folder.name
-
-        metadata_file = Path(issue_folder / "metadata.json")
-        with open(metadata_file, "r", encoding="utf-8") as f:
-            metadata = json.loads(f.read())
-            issue_identifier = metadata["identifier"]
-            status = metadata["status"]
-
-        issues.append({"issue_id": issue_id, "identifier": issue_identifier, "status": status})
-
-    return render_template("issue_list.html", issues=issues)
+    return render_template("issue_list.html", issues=store.list_issues())
 
 @app.route("/issue/<issue_id>/plan")
 def issue_detail(issue_id):
-    issue_dir = Path(BUG_WORKSPACE_DIR / issue_id)
-    generated_plan = Path(issue_dir / "plan.md")
-    metadata_file = Path(issue_dir / "metadata.json")
+    issue = _issue_or_404(issue_id)
+    plan = _read(issue_id, "plan.md")
 
-    with open(generated_plan, "r", encoding="utf-8") as f:
-        html_plan = render_md(f.read())
-
-    with open(metadata_file, "r", encoding="utf-8") as f:
-        metadata = json.loads(f.read())
-        issue_identifier = metadata["identifier"]
-        status = metadata["status"]
-
-
-    return render_template("issue_detail.html", html_content=html_plan, issue_id=issue_id, identifier=issue_identifier, issue_status=status, metadata=metadata)
+    return render_template(
+        "issue_detail.html",
+        issue=issue,
+        html_content=render_md(plan) if plan else None,
+        actions=store.allowed_actions(issue),
+        runs=store.runs(issue_id),
+        events=store.events(issue_id),
+    )
 
 
 @app.route("/issue/<issue_id>/issue_context")
 def issue_context(issue_id):
-    issue_dir = Path(BUG_WORKSPACE_DIR / issue_id)
-    gathered_issue_ctx = Path(issue_dir / "issue.md")
+    issue = _issue_or_404(issue_id)
+    issue_ctx = _read(issue_id, "issue.md")
 
-    with open(gathered_issue_ctx, "r", encoding="utf-8") as f:
-        html_issue_ctx = render_md(f.read())
+    return render_template(
+        "issue_ctx_detail.html",
+        issue=issue,
+        html_content=render_md(issue_ctx) if issue_ctx else None,
+    )
 
-    return render_template("issue_ctx_detail.html", html_content=html_issue_ctx, issue_id=issue_id)
+
+def _start(issue_id: str, action: str, to_status: str, is_plan_approved: bool, remarks: str):
+    issue = _issue_or_404(issue_id)
+    # The status change claims the issue, so a second click or a run in progress can't start another agent
+    if action not in store.allowed_actions(issue) or not store.transition(
+        issue_id, to_status, expected=store.ACTIONS[action], actor=request.authorization.username
+    ):
+        flash(f"Can't {action} while the issue is {issue['status']}.")
+        return redirect(url_for("issue_detail", issue_id=issue_id))
+
+    store.set_fields(issue_id, plan_reviewed_by=request.authorization.username)
+    threading.Thread(target=_worker, args=(issue_id, is_plan_approved, remarks), daemon=True).start()
+    return redirect(url_for("issue_detail", issue_id=issue_id))
+
 
 @app.route("/issue/<issue_id>/approve", methods=["POST"])
 def approve_plan(issue_id: str):
-    issue_dir = Path(BUG_WORKSPACE_DIR / issue_id)
-    metadata_file = Path(issue_dir / "metadata.json")
-
-    with open(metadata_file, "r", encoding="utf-8") as f:
-        metadata = json.loads(f.read())
-        print(metadata)
-        metadata["status"] = "plan-approved-agent-working"
-        metadata["plan_reviewed_by"] = request.authorization.username
-        session_id = metadata["session_id"]
-
-    with open(metadata_file, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=4)
-
-    with _lock:
-        if issue_id not in _running:
-            _running.add(issue_id)
-            threading.Thread(target=_worker, args=(issue_id, True, ""), daemon=True).start()
-
-    return redirect(url_for("issue_detail", issue_id=issue_id))
+    return _start(issue_id, "approve", store.IMPLEMENTING, True, "")
 
 @app.route("/issue/<issue_id>/rework-plan", methods=["POST"])
 def rework_plan(issue_id: str):
-    issue_dir = Path(BUG_WORKSPACE_DIR / issue_id)
-    metadata_file = Path(issue_dir / "metadata.json")
     feedback = request.form.get("feedback", "").strip()
-
-    with open(metadata_file, "r", encoding="utf-8") as f:
-        metadata = json.loads(f.read())
-        print(metadata)
-        metadata["status"] = "plan-rework-requested-agent-planning"
-        metadata["plan_reviewed_by"] = request.authorization.username
-        session_id = metadata["session_id"]
-
-    with open(metadata_file, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=4)
-
-    with _lock:
-        if issue_id not in _running:
-            _running.add(issue_id)
-            threading.Thread(target=_worker, args=(issue_id, False, feedback), daemon=True).start()
-
-    return redirect(url_for("issue_detail", issue_id=issue_id))
+    return _start(issue_id, "rework", store.REWORKING, False, feedback)

@@ -7,6 +7,9 @@ import anyio
 import httpx
 import pytest
 
+from conftest import seed_issue
+from software_factory import store
+
 main = importlib.import_module("software_factory.main")
 
 BRANCH = "fix/BEI-1"
@@ -38,24 +41,22 @@ def repo(tmp_path: Path, remote: Path) -> Path:
     run(repo, "config", "user.name", "Test")
     run(repo, "remote", "add", "origin", str(remote))
     commit(repo, "base.txt")
+    run(repo, "push", "-q", "origin", main.BASE_BRANCH)
+    run(repo, "fetch", "-q", "origin")
     run(repo, "checkout", "-b", BRANCH)
     return repo
 
 
 @pytest.fixture
-def ws(tmp_path: Path, monkeypatch, repo: Path) -> Path:
-    monkeypatch.chdir(tmp_path)
-    ws = tmp_path / "bug_workspace" / "issue-1"
-    ws.mkdir(parents=True)
-    (ws / "metadata.json").write_text(json.dumps({"identifier": "BEI-1", "status": "plan-approved-agent-working", "session_id": "s"}))
-    (ws / "issue.md").write_text('<issue id="BEI-1">\nTitle: Grade shows .None\nDescription:\n...\n</issue>')
+def ws(monkeypatch, repo: Path) -> Path:
+    ws = seed_issue(store.IMPLEMENTING)
     (ws / "report.md").write_text("Root cause: placeholder grade.")
     monkeypatch.setattr(main, "ensure_worktree", lambda _: repo)
     return ws
 
 
 def metadata(ws: Path) -> dict:
-    return json.loads((ws / "metadata.json").read_text())
+    return dict(store.get_issue("issue-1"))
 
 
 def stub_create(monkeypatch, url="https://ado/pullrequest/7", error=None):
@@ -112,7 +113,7 @@ def test_pr_failure_needs_attention(ws, repo, monkeypatch):
     meta = metadata(ws)
     assert meta["status"] == "needs-attention"
     assert meta["needs_attention_reason"] == "PR creation failed: AZURE_DEVOPS_PAT is not set"
-    assert "pr_url" not in meta
+    assert meta["pr_url"] is None
 
 
 def test_description_includes_review_and_truncates(ws):
@@ -120,6 +121,11 @@ def test_description_includes_review_and_truncates(ws):
     assert main.pr_description(ws) == "Root cause: placeholder grade.\n\n---\n\n**Verdict:** Not blocking"
     (ws / "report.md").write_text("x" * 5000)
     assert len(main.pr_description(ws)) <= main.ADO_DESCRIPTION_LIMIT
+
+
+def test_description_links_linear_issue(ws):
+    description = main.pr_description(ws, "https://linear.app/x/BEI-1")
+    assert description == "Linear issue: https://linear.app/x/BEI-1\n\n---\n\nRoot cause: placeholder grade."
 
 
 def mock_ado(monkeypatch, handler):
