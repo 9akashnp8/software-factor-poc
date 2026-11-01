@@ -1,8 +1,8 @@
 import os
 from datetime import datetime
 
-import markdown
 import nh3
+from markdown_it import MarkdownIt
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, flash, render_template, redirect, url_for, request
 from flask_wtf.csrf import CSRFProtect
@@ -40,10 +40,15 @@ def worker_pause():
     return {"paused_until": datetime.fromtimestamp(until).strftime("%H:%M") if until else None}
 
 
+# CommonMark, as agents write it: a list may follow a paragraph line directly, and nested
+# lists indent by two spaces. Tables and strikethrough as in GitHub's flavour.
+_MARKDOWN = MarkdownIt("commonmark").enable(["table", "strikethrough"])
+
+
 def render_md(text: str) -> Markup:
     # issue.md holds QA text and users' chat messages, and Markdown passes raw HTML
     # through, so strip anything that could run script before marking it safe
-    return Markup(nh3.clean(markdown.markdown(text, extensions=["extra"])))
+    return Markup(nh3.clean(_MARKDOWN.render(text)))
 
 
 def _read(issue_id: str, name: str) -> str | None:
