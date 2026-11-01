@@ -74,6 +74,23 @@ An `ExitPlanMode` call denied with `interrupt=True` ends the run as
 `subtype="error_during_execution"`, `is_error=True`. That's why a planning run's success is
 judged by whether the plan was saved, not by the result subtype.
 
+## Models and caching
+
+Planning and rework run on `SF_PLAN_MODEL` (Opus), implementation and fixes on
+`SF_IMPLEMENT_MODEL` (Sonnet), in the same resumed session. Each model has its own prompt
+cache, so the first implementation request reads the planning transcript uncached. That
+costs nothing extra in practice: a person reviews the plan in between, which takes longer
+than the cache lives (5 minutes with an API key, 1 hour on a subscription), so the cache
+would have expired on the same model too. See
+[How Claude Code uses prompt caching](https://code.claude.com/docs/en/prompt-caching).
+
+## Environment
+
+Agents inherit the factory's environment, with `ClaudeAgentOptions.env` layered on top.
+The factory passes the issue's slot variables (`docs/running.md`) and blanks its own
+credentials, `config.FACTORY_SECRETS`, so an agent can't read the Linear key or the Azure
+DevOps PAT.
+
 ## Implementation phase
 
 `permission_mode="auto"`: the classifier reviews shell commands and network requests, and

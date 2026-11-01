@@ -1,7 +1,6 @@
 import os
-import threading
+from datetime import datetime
 
-import anyio
 import markdown
 import nh3
 from dotenv import load_dotenv
@@ -11,7 +10,6 @@ from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from software_factory import store
-from software_factory.main import implement_and_review
 
 load_dotenv()
 
@@ -34,12 +32,11 @@ USERS = _load_users(os.getenv("SF_USERS", ""))
 # Checked for unknown users too, so a wrong name takes as long as a wrong password
 _DUMMY_HASH = generate_password_hash("unused")
 
-# Runs this process started and never finished can't still be going after a restart
-store.reap_interrupted("web")
-
-
-def _worker(issue_id, is_plan_approved, remarks):
-    anyio.run(implement_and_review, issue_id, is_plan_approved, remarks, "web")
+@app.context_processor
+def worker_pause():
+    # The worker holds off while a rate limit is in force; every page says until when
+    until = store.paused_until()
+    return {"paused_until": datetime.fromtimestamp(until).strftime("%H:%M") if until else None}
 
 
 def render_md(text: str) -> Markup:
@@ -106,25 +103,29 @@ def issue_context(issue_id):
     )
 
 
-def _start(issue_id: str, action: str, to_status: str, is_plan_approved: bool, remarks: str):
+def _queue(issue_id: str, action: str, **fields):
+    """Put the issue on the worker's queue for action; the worker runs it."""
     issue = _issue_or_404(issue_id)
-    # The status change claims the issue, so a second click or a run in progress can't start another agent
+    # Fields first, so the worker never claims the issue without them
+    if action in store.allowed_actions(issue) and fields:
+        store.set_fields(issue_id, **fields)
+    # The status change claims the issue, so a second click can't queue it twice
     if action not in store.allowed_actions(issue) or not store.transition(
-        issue_id, to_status, expected=store.ACTIONS[action], actor=request.authorization.username
+        issue_id, store.ACTION_QUEUES[action], expected=store.ACTIONS[action], actor=request.authorization.username
     ):
         flash(f"Can't {action} while the issue is {issue['status']}.")
-        return redirect(url_for("issue_detail", issue_id=issue_id))
-
-    store.set_fields(issue_id, plan_reviewed_by=request.authorization.username)
-    threading.Thread(target=_worker, args=(issue_id, is_plan_approved, remarks), daemon=True).start()
     return redirect(url_for("issue_detail", issue_id=issue_id))
 
 
 @app.route("/issue/<issue_id>/approve", methods=["POST"])
 def approve_plan(issue_id: str):
-    return _start(issue_id, "approve", store.IMPLEMENTING, True, "")
+    return _queue(issue_id, "approve", plan_reviewed_by=request.authorization.username)
 
 @app.route("/issue/<issue_id>/rework-plan", methods=["POST"])
 def rework_plan(issue_id: str):
     feedback = request.form.get("feedback", "").strip()
-    return _start(issue_id, "rework", store.REWORKING, False, feedback)
+    return _queue(issue_id, "rework", plan_reviewed_by=request.authorization.username, pending_feedback=feedback)
+
+@app.route("/issue/<issue_id>/retry", methods=["POST"])
+def retry_triage(issue_id: str):
+    return _queue(issue_id, "retry")

@@ -47,6 +47,13 @@
     </form>
     {% endif %}
 
+    {% if 'retry' in actions %}
+    <form method="post" action="{{ url_for('retry_triage', issue_id=issue.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <button type="submit">Retry triage</button>
+    </form>
+    {% endif %}
+
     {% if runs %}
     <h2>Agent runs</h2>
     <table>

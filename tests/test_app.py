@@ -1,5 +1,6 @@
 import base64
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -31,14 +32,6 @@ def client(monkeypatch):
     monkeypatch.setattr(web, "USERS", {"akash": generate_password_hash("s3cret")})
     monkeypatch.setitem(web.app.config, "SECRET_KEY", "test")
     return web.app.test_client()
-
-
-@pytest.fixture
-def started(monkeypatch) -> list:
-    """Record agent runs instead of starting them."""
-    runs = []
-    monkeypatch.setattr(web, "_worker", lambda *args: runs.append(args))
-    return runs
 
 
 def csrf_token(client, issue_id="issue-1") -> str:
@@ -75,39 +68,38 @@ def test_issue_context_strips_script(client, ws):
     assert "Hi" in page
 
 
-def test_approve_without_csrf_token_is_rejected(client, ws, started):
+def test_approve_without_csrf_token_is_rejected(client, ws):
     assert client.post("/issue/issue-1/approve", headers=AUTH).status_code == 400
-    assert started == []
     assert store.get_issue("issue-1")["status"] == store.PLAN_READY
 
 
-def test_approve_with_csrf_token_starts_implementation(client, ws, started):
+def test_approve_with_csrf_token_queues_implementation(client, ws):
     token = csrf_token(client)
     response = client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token})
     assert response.status_code == 302
     issue = store.get_issue("issue-1")
-    assert issue["status"] == store.IMPLEMENTING
+    assert issue["status"] == store.IMPLEMENT_QUEUED
     assert issue["plan_reviewed_by"] == "akash"
     assert store.events("issue-1")[-1]["actor"] == "akash"
-    assert started == [("issue-1", True, "")]
 
 
-def test_rework_with_csrf_token_sends_feedback(client, ws, started):
+def test_rework_with_csrf_token_queues_feedback(client, ws):
     token = csrf_token(client)
     client.post("/issue/issue-1/rework-plan", headers=AUTH, data={"csrf_token": token, "feedback": "Check the router"})
-    assert started == [("issue-1", False, "Check the router")]
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["pending_feedback"]) == (store.REWORK_QUEUED, "Check the router")
 
 
 def test_load_users():
     assert web._load_users("a:scrypt:1$x$y, b:pbkdf2:z,") == {"a": "scrypt:1$x$y", "b": "pbkdf2:z"}
 
 
-def test_second_action_while_agent_runs_is_refused(client, ws, started):
+def test_second_action_after_queueing_is_refused(client, ws):
     token = csrf_token(client)
     client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token})
     response = client.post("/issue/issue-1/rework-plan", headers=AUTH, data={"csrf_token": token, "feedback": "x"}, follow_redirects=True)
-    assert started == [("issue-1", True, "")]
-    assert store.get_issue("issue-1")["status"] == store.IMPLEMENTING
+    assert store.get_issue("issue-1")["status"] == store.IMPLEMENT_QUEUED
+    assert store.get_issue("issue-1")["pending_feedback"] is None
     assert "Can&#39;t rework" in response.get_data(as_text=True)
 
 
@@ -135,3 +127,16 @@ def test_needs_attention_shows_reason(client, ws):
 def test_unknown_issue_is_404(client):
     assert client.get("/issue/nope/plan", headers=AUTH).status_code == 404
     assert client.get("/issue/nope/issue_context", headers=AUTH).status_code == 404
+
+
+def test_retry_requeues_an_issue_that_failed_before_planning(client):
+    seed_issue(store.NEEDS_ATTENTION)
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Retry triage" in page and "Approve Plan" not in page
+    client.post("/issue/issue-1/retry", headers=AUTH, data={"csrf_token": csrf_token(client)})
+    assert store.get_issue("issue-1")["status"] == store.QUEUED
+
+
+def test_pages_show_rate_limit_pause(client, ws):
+    store.pause_until(time.time() + 600)
+    assert "Rate limited" in client.get("/", headers=AUTH).get_data(as_text=True)

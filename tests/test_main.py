@@ -1,14 +1,15 @@
 import importlib
 import json
+import time
 from pathlib import Path
 
 import anyio
 import httpx
 import pytest
-from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
+from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, RateLimitEvent, RateLimitInfo, ResultMessage
 
 from conftest import seed_issue
-from software_factory import store
+from software_factory import config, store
 
 main = importlib.import_module("software_factory.main")
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -81,6 +82,9 @@ def triage(monkeypatch, tmp_path: Path):
             return bug_info
 
         monkeypatch.setattr(main, "get_issue", fake_get_issue)
+        # As the worker does: queue it, then claim it, which hands out the slot
+        store.enqueue_new(bug_info["id"], bug_info["identifier"])
+        assert store.claim_next() == (bug_info["id"], "triage")
         anyio.run(main.triage_and_plan_issue, bug_info["id"])
         return downloads
 
@@ -259,32 +263,68 @@ def test_rework_saves_new_plan_without_touching_report(monkeypatch, pr_calls):
     assert sessions[0].options.permission_mode == "plan"
 
 
-# Linear
+# Rate limits, models and slot environments
 
 
-def mock_linear(monkeypatch, handler):
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kw: real_client(**kw, transport=httpx.MockTransport(handler)))
+def rejected(resets_at: float | None) -> RateLimitEvent:
+    return RateLimitEvent(rate_limit_info=RateLimitInfo(status="rejected", resets_at=resets_at), uuid="u", session_id="s")
 
 
-def test_list_todo_bugs_follows_pages(monkeypatch):
-    def handler(request):
-        after = json.loads(request.content)["variables"]["after"]
-        page = {"nodes": [{"id": "a"}], "pageInfo": {"hasNextPage": True, "endCursor": "c1"}} if after is None \
-            else {"nodes": [{"id": "b"}], "pageInfo": {"hasNextPage": False, "endCursor": None}}
-        return httpx.Response(200, json={"data": {"issues": page}})
-
-    mock_linear(monkeypatch, handler)
-    assert [i["id"] for i in anyio.run(main.list_todo_bugs)] == ["a", "b"]
-
-
-def test_graphql_errors_raise_linear_error(monkeypatch):
-    mock_linear(monkeypatch, lambda request: httpx.Response(400, json={"errors": [{"message": "Bad filter"}]}))
-    with pytest.raises(main.LinearError, match="Bad filter"):
-        anyio.run(main.list_todo_bugs)
+def test_rate_limited_implementation_is_requeued_and_pauses_the_worker(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    resets = int(time.time()) + 900
+    fake_agent(monkeypatch, results=[rejected(resets), result("error_during_execution", is_error=True, text="")])
+    implement()
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["attempts"]) == (store.IMPLEMENT_QUEUED, 1)
+    assert store.paused_until() == resets
+    assert store.runs("issue-1")[0]["rate_limited"] == 1
+    assert pr_calls == []
 
 
-def test_missing_issue_raises_linear_error(monkeypatch):
-    mock_linear(monkeypatch, lambda request: httpx.Response(200, json={"data": {"issue": None}}))
-    with pytest.raises(main.LinearError, match="not found"):
-        anyio.run(main.get_issue, "nope")
+def test_retried_implementation_is_told_to_continue(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    store.requeue("issue-1", "rate limit")
+    store.claim_next()
+    sessions = fake_agent(monkeypatch)
+    implement()
+    assert sessions[0].prompt == main.CONTINUE_PROMPT
+
+
+def test_api_429_without_an_event_still_requeues(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    limited = result("success", is_error=True, text="")
+    limited.api_error_status = 429
+    fake_agent(monkeypatch, results=[limited])
+    implement()
+    assert store.get_issue("issue-1")["status"] == store.IMPLEMENT_QUEUED
+    assert store.paused_until() is not None
+
+
+def test_rejection_the_run_recovered_from_is_ignored(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    fake_agent(monkeypatch, results=[rejected(time.time() + 900), result(text="Root cause: x")])
+    implement()
+    assert pr_calls == ["issue-1"]
+    assert store.paused_until() is None
+
+
+def test_rate_limited_triage_starts_over_from_the_queue(triage, monkeypatch):
+    fake_agent(monkeypatch, results=[rejected(time.time() + 900), result("error_during_execution", is_error=True, text="")])
+    triage(bug())
+    assert store.get_issue("issue-1")["status"] == store.QUEUED
+
+
+def test_agents_get_their_slot_env_and_phase_model(triage, monkeypatch, pr_calls):
+    sessions = fake_agent(monkeypatch, exit_plan={"plan": "# Plan"})
+    triage(bug())
+    plan_options = sessions[0].options
+    assert plan_options.model == config.PLAN_MODEL
+    slot = store.get_issue("issue-1")["slot"]
+    assert plan_options.env["API_PORT"] == str(config.SLOT_API_PORT_BASE + slot)
+    assert plan_options.env["LINEAR_API_KEY"] == ""
+
+    store.transition("issue-1", store.IMPLEMENTING)
+    implement()
+    assert sessions[1].options.model == config.IMPLEMENT_MODEL
+    assert sessions[1].options.env == plan_options.env

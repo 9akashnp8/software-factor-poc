@@ -1,7 +1,9 @@
+import sqlite3
+import time
 from types import SimpleNamespace
 
 from conftest import seed_issue
-from software_factory import store
+from software_factory import config, store
 
 
 def statuses() -> list[tuple]:
@@ -46,19 +48,6 @@ def test_runs_record_result():
     assert run["ended_at"] is not None
 
 
-def test_reap_flags_only_this_owners_open_runs():
-    seed_issue(store.IMPLEMENTING)
-    seed_issue(store.PLANNING, issue_id="issue-2", identifier="BEI-2")
-    web_run = store.start_run("issue-1", "implement", "web")
-    store.start_run("issue-2", "plan", "cli")
-
-    assert store.reap_interrupted("web") == ["issue-1"]
-    assert store.get_issue("issue-1")["status"] == store.NEEDS_ATTENTION
-    assert "restarted" in store.get_issue("issue-1")["needs_attention_reason"]
-    assert store.runs("issue-1")[0]["ended_at"] is not None and store.runs("issue-1")[0]["id"] == web_run
-    assert store.get_issue("issue-2")["status"] == store.PLANNING
-
-
 def test_allowed_actions_need_a_plan_and_session():
     ws = seed_issue(store.PLAN_READY)
     assert store.allowed_actions(store.get_issue("issue-1")) == []
@@ -66,3 +55,111 @@ def test_allowed_actions_need_a_plan_and_session():
     assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework"]
     store.transition("issue-1", store.PR_OPENED)
     assert store.allowed_actions(store.get_issue("issue-1")) == []
+
+
+def test_enqueue_new_skips_issues_seen_before():
+    assert store.enqueue_new("issue-1", "BEI-1", "Title")
+    store.transition("issue-1", store.PR_OPENED)
+    assert not store.enqueue_new("issue-1", "BEI-1", "Title")
+    assert store.get_issue("issue-1")["status"] == store.PR_OPENED
+
+
+def test_claim_next_serves_waiting_people_first_then_oldest():
+    store.enqueue_new("t1", "BEI-1")
+    store.enqueue_new("t2", "BEI-2")
+    seed_issue(store.IMPLEMENT_QUEUED, issue_id="i1", identifier="BEI-3", slot=5)
+    assert store.claim_next() == ("i1", "implement")
+    assert store.claim_next() == ("t1", "triage")
+    assert store.claim_next() == ("t2", "triage")
+    assert store.claim_next() is None
+    assert store.get_issue("t1")["status"] == store.GATHERING_CONTEXT
+
+
+def test_triage_claim_takes_the_lowest_free_slot(monkeypatch):
+    monkeypatch.setattr(config, "SLOT_COUNT", 2)
+    seed_issue(store.PR_OPENED, issue_id="held", identifier="BEI-9", slot=1)
+    store.enqueue_new("t1", "BEI-1")
+    store.enqueue_new("t2", "BEI-2")
+    store.claim_next()
+    assert store.get_issue("t1")["slot"] == 2
+    # Every slot is in use until a merge frees one
+    assert store.claim_next() is None
+    store.free_slot("held")
+    assert store.claim_next() == ("t2", "triage")
+    assert store.get_issue("t2")["slot"] == 1
+
+
+def test_retried_triage_keeps_its_slot(monkeypatch):
+    monkeypatch.setattr(config, "SLOT_COUNT", 1)
+    seed_issue(store.QUEUED, slot=1)
+    assert store.claim_next() == ("issue-1", "triage")
+    assert store.get_issue("issue-1")["slot"] == 1
+
+
+def test_requeue_returns_to_the_phase_queue_until_attempts_run_out(monkeypatch):
+    monkeypatch.setattr(config, "MAX_ATTEMPTS", 2)
+    seed_issue(store.IMPLEMENTING)
+    for _ in range(2):
+        assert store.requeue("issue-1", "rate limit")
+        assert store.get_issue("issue-1")["status"] == store.IMPLEMENT_QUEUED
+        store.claim_next()
+    assert not store.requeue("issue-1", "rate limit")
+    issue = store.get_issue("issue-1")
+    assert issue["status"] == store.NEEDS_ATTENTION
+    assert "gave up after 2 retries" in issue["needs_attention_reason"]
+
+
+def test_milestones_reset_attempts():
+    seed_issue(store.IMPLEMENTING)
+    store.requeue("issue-1", "rate limit")
+    store.transition("issue-1", store.PR_OPENED)
+    assert store.get_issue("issue-1")["attempts"] == 0
+
+
+def test_requeue_ignores_issues_not_running():
+    seed_issue(store.PLAN_READY)
+    assert not store.requeue("issue-1", "rate limit")
+    assert store.get_issue("issue-1")["status"] == store.PLAN_READY
+
+
+def test_pause_keeps_the_latest_end():
+    assert store.paused_until() is None
+    store.pause_until(time.time() + 600)
+    store.pause_until(time.time() + 60)
+    assert store.paused_until() > time.time() + 500
+    store.pause_until(time.time() - 1)
+    assert store.paused_until() is not None
+
+
+def test_expired_pause_reads_as_none():
+    store.pause_until(time.time() - 5)
+    assert store.paused_until() is None
+
+
+def test_worker_restart_requeues_orphans_and_closes_their_runs():
+    seed_issue(store.IMPLEMENTING)
+    seed_issue(store.PLANNING, issue_id="issue-2", identifier="BEI-2", slot=2)
+    seed_issue(store.PLAN_READY, issue_id="issue-3", identifier="BEI-3", slot=3)
+    store.start_run("issue-1", "implement", "worker")
+
+    assert sorted(store.requeue_orphans()) == ["issue-1", "issue-2"]
+    assert store.get_issue("issue-1")["status"] == store.IMPLEMENT_QUEUED
+    assert store.get_issue("issue-2")["status"] == store.QUEUED
+    assert store.get_issue("issue-3")["status"] == store.PLAN_READY
+    assert store.runs("issue-1")[0]["ended_at"] is not None
+
+
+def test_retry_is_offered_only_without_a_plan():
+    ws = seed_issue(store.NEEDS_ATTENTION)
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["retry"]
+    (ws / "plan.md").write_text("# Plan")
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework"]
+
+
+def test_older_databases_gain_the_new_columns():
+    store.DB_PATH.parent.mkdir(parents=True)
+    conn = sqlite3.connect(store.DB_PATH)
+    conn.execute("CREATE TABLE issues (id TEXT PRIMARY KEY, identifier TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', url TEXT, status TEXT NOT NULL, session_id TEXT, pr_url TEXT, needs_attention_reason TEXT, plan_reviewed_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    conn.close()
+    store.enqueue_new("issue-1", "BEI-1")
+    assert store.get_issue("issue-1")["attempts"] == 0

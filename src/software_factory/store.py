@@ -1,39 +1,71 @@
-"""Issue state in SQLite, shared by the CLI and the web app.
+"""Issue state in SQLite, shared by the worker and the web app.
 
 issues holds each issue's current state, events every status change, and runs every agent
 session with its outcome and cost. Large artifacts (issue.md, plan.md, report.md,
 attachments, conversation.json) stay as files in issue_dir(issue_id).
+
+The worker is the only process that runs agents. It takes work from the queued statuses
+with claim_next(); the web app only moves issues into them.
 """
 
 import os
 import sqlite3
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Absolute, so the CLI and the web app share state whatever directory they start in
+from software_factory import config
+
+# Absolute, so the worker and the web app share state whatever directory they start in
 WORKSPACE_DIR = Path(os.getenv("SF_WORKSPACE_DIR", "bug_workspace")).resolve()
 DB_PATH = WORKSPACE_DIR / "factory.db"
 
+QUEUED = "queued"
 GATHERING_CONTEXT = "gathering-context"
 PLANNING = "gathered-context"
 PLAN_READY = "plan-generated-for-review"
+IMPLEMENT_QUEUED = "plan-approved-queued"
 IMPLEMENTING = "plan-approved-agent-working"
+REWORK_QUEUED = "plan-rework-queued"
 REWORKING = "plan-rework-requested-agent-planning"
 REVIEWING = "reviewing"
 FIXING = "fixing-review-findings"
 READY_FOR_PR = "ready-for-pr"
 WORK_COMPLETED = "agent-work-completed"
 PR_OPENED = "pr-opened"
+MERGED = "merged"
 NEEDS_ATTENTION = "needs-attention"
 
-# Statuses a reviewer's action may start from. Claiming the issue with a compare-and-set
-# on these is what keeps two clicks from starting two agents.
+# Statuses a reviewer's action may start from, and the queue each action puts the issue
+# in. Claiming the issue with a compare-and-set on these keeps two clicks from queueing twice.
 ACTIONS = {
     "approve": frozenset({PLAN_READY, NEEDS_ATTENTION}),
     "rework": frozenset({PLAN_READY, NEEDS_ATTENTION}),
+    "retry": frozenset({NEEDS_ATTENTION}),
 }
+ACTION_QUEUES = {"approve": IMPLEMENT_QUEUED, "rework": REWORK_QUEUED, "retry": QUEUED}
+
+# What the worker picks up, in priority order: a person is waiting on the first two
+JOBS = [
+    (IMPLEMENT_QUEUED, IMPLEMENTING, "implement"),
+    (REWORK_QUEUED, REWORKING, "rework"),
+    (QUEUED, GATHERING_CONTEXT, "triage"),
+]
+# Where an issue goes back to when its run is cut off, by the status it was running in
+REQUEUE_TO = {
+    GATHERING_CONTEXT: QUEUED,
+    PLANNING: QUEUED,
+    IMPLEMENTING: IMPLEMENT_QUEUED,
+    REVIEWING: IMPLEMENT_QUEUED,
+    FIXING: IMPLEMENT_QUEUED,
+    READY_FOR_PR: IMPLEMENT_QUEUED,
+    WORK_COMPLETED: IMPLEMENT_QUEUED,
+    REWORKING: REWORK_QUEUED,
+}
+# Reaching one of these ends a run of rate-limit retries
+MILESTONES = frozenset({PLAN_READY, PR_OPENED, MERGED})
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS issues (
@@ -44,8 +76,12 @@ CREATE TABLE IF NOT EXISTS issues (
     status TEXT NOT NULL,
     session_id TEXT,
     pr_url TEXT,
+    pr_id INTEGER,
     needs_attention_reason TEXT,
     plan_reviewed_by TEXT,
+    pending_feedback TEXT,
+    slot INTEGER UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -72,15 +108,42 @@ CREATE TABLE IF NOT EXISTS runs (
     cost_usd REAL,
     duration_ms INTEGER,
     result_text TEXT,
-    error TEXT
+    error TEXT,
+    rate_limited INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS factory_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
 );
 """
 
-ISSUE_FIELDS = {"identifier", "title", "url", "session_id", "pr_url", "needs_attention_reason", "plan_reviewed_by"}
+# Columns added after the first release, for databases created before them
+_ADDED_COLUMNS = {
+    "issues": {
+        "pr_id": "INTEGER",
+        "pending_feedback": "TEXT",
+        "slot": "INTEGER",
+        "attempts": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "runs": {"rate_limited": "INTEGER NOT NULL DEFAULT 0"},
+}
+
+ISSUE_FIELDS = {
+    "identifier", "title", "url", "session_id", "pr_url", "pr_id",
+    "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
+}
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _add_missing_columns(conn: sqlite3.Connection):
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 @contextmanager
@@ -93,9 +156,17 @@ def _db() -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
+        _add_missing_columns(conn)
         yield conn
     finally:
         conn.close()
+
+
+def _event(conn, issue_id, from_status, to_status, actor=None, detail=None):
+    conn.execute(
+        "INSERT INTO events (issue_id, at, from_status, to_status, actor, detail) VALUES (?, ?, ?, ?, ?, ?)",
+        (issue_id, _now(), from_status, to_status, actor, detail),
+    )
 
 
 def issue_dir(issue_id: str) -> Path:
@@ -116,11 +187,24 @@ def upsert_issue(issue_id: str, identifier: str, title: str = "", url: str | Non
                    updated_at = excluded.updated_at""",
             (issue_id, identifier, title, url, status, now, now),
         )
-        conn.execute(
-            "INSERT INTO events (issue_id, at, from_status, to_status) VALUES (?, ?, ?, ?)",
-            (issue_id, now, previous["status"] if previous else None, status),
-        )
+        _event(conn, issue_id, previous["status"] if previous else None, status)
         conn.execute("COMMIT")
+
+
+def enqueue_new(issue_id: str, identifier: str, title: str = "", url: str | None = None) -> bool:
+    """Queue a Linear issue for triage unless the factory has seen it before. Returns whether it was new."""
+    now = _now()
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            """INSERT INTO issues (id, identifier, title, url, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING""",
+            (issue_id, identifier, title, url, QUEUED, now, now),
+        )
+        if cursor.rowcount:
+            _event(conn, issue_id, None, QUEUED)
+        conn.execute("COMMIT")
+        return bool(cursor.rowcount)
 
 
 def get_issue(issue_id: str) -> sqlite3.Row | None:
@@ -128,9 +212,11 @@ def get_issue(issue_id: str) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
 
 
-def list_issues() -> list[sqlite3.Row]:
+def list_issues(status: str | None = None) -> list[sqlite3.Row]:
     with _db() as conn:
-        return conn.execute("SELECT * FROM issues ORDER BY updated_at DESC").fetchall()
+        if status is None:
+            return conn.execute("SELECT * FROM issues ORDER BY updated_at DESC").fetchall()
+        return conn.execute("SELECT * FROM issues WHERE status = ? ORDER BY updated_at", (status,)).fetchall()
 
 
 def set_fields(issue_id: str, **fields):
@@ -163,22 +249,118 @@ def transition(
         if row is None or (expected is not None and row["status"] not in set(expected)):
             conn.execute("ROLLBACK")
             return False
-        now = _now()
         conn.execute(
-            "UPDATE issues SET status = ?, needs_attention_reason = ?, updated_at = ? WHERE id = ?",
-            (to_status, reason if to_status == NEEDS_ATTENTION else None, now, issue_id),
+            """UPDATE issues SET status = ?, needs_attention_reason = ?, updated_at = ?,
+                   attempts = CASE WHEN ? THEN 0 ELSE attempts END
+               WHERE id = ?""",
+            (
+                to_status,
+                reason if to_status == NEEDS_ATTENTION else None,
+                _now(),
+                to_status in MILESTONES,
+                issue_id,
+            ),
         )
-        conn.execute(
-            "INSERT INTO events (issue_id, at, from_status, to_status, actor, detail) VALUES (?, ?, ?, ?, ?, ?)",
-            (issue_id, now, row["status"], to_status, actor, reason),
-        )
+        _event(conn, issue_id, row["status"], to_status, actor, reason)
         conn.execute("COMMIT")
         return True
+
+
+def _free_slot_number(conn: sqlite3.Connection) -> int | None:
+    taken = {row["slot"] for row in conn.execute("SELECT slot FROM issues WHERE slot IS NOT NULL")}
+    return next((n for n in range(1, config.SLOT_COUNT + 1) if n not in taken), None)
+
+
+def claim_next() -> tuple[str, str] | None:
+    """Take the next queued issue and move it to its running status.
+
+    Returns (issue_id, job), job being "implement", "rework" or "triage", or None when
+    nothing is waiting. Triage also takes a slot, so it waits while every slot is in use.
+    """
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        free_slot = _free_slot_number(conn)
+        for queued, running, job in JOBS:
+            row = conn.execute(
+                """SELECT id, slot FROM issues WHERE status = ? AND (slot IS NOT NULL OR ?)
+                   ORDER BY updated_at, rowid LIMIT 1""",
+                (queued, job != "triage" or free_slot is not None),
+            ).fetchone()
+            if row is None:
+                continue
+            slot = row["slot"] if row["slot"] is not None or job != "triage" else free_slot
+            conn.execute(
+                "UPDATE issues SET status = ?, slot = ?, updated_at = ? WHERE id = ?",
+                (running, slot, _now(), row["id"]),
+            )
+            _event(conn, row["id"], queued, running, "worker")
+            conn.execute("COMMIT")
+            return row["id"], job
+        conn.execute("ROLLBACK")
+        return None
+
+
+def free_slot(issue_id: str):
+    with _db() as conn:
+        conn.execute("UPDATE issues SET slot = NULL, updated_at = ? WHERE id = ?", (_now(), issue_id))
+
+
+def requeue(issue_id: str, reason: str) -> bool:
+    """Put an issue whose run was cut off back on its queue.
+
+    After config.MAX_ATTEMPTS requeues without reaching a milestone it needs attention
+    instead. Returns whether it was requeued.
+    """
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT status, attempts FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        if row is None or row["status"] not in REQUEUE_TO:
+            conn.execute("ROLLBACK")
+            return False
+        attempts = row["attempts"] + 1
+        if attempts > config.MAX_ATTEMPTS:
+            to_status, flagged = NEEDS_ATTENTION, f"{reason} (gave up after {config.MAX_ATTEMPTS} retries)"
+        else:
+            to_status, flagged = REQUEUE_TO[row["status"]], None
+        conn.execute(
+            "UPDATE issues SET status = ?, attempts = ?, needs_attention_reason = ?, updated_at = ? WHERE id = ?",
+            (to_status, attempts, flagged, _now(), issue_id),
+        )
+        _event(conn, issue_id, row["status"], to_status, "worker", flagged or reason)
+        conn.execute("COMMIT")
+        return to_status != NEEDS_ATTENTION
+
+
+def pause_until(timestamp: float):
+    """Stop the worker starting runs until timestamp (Unix seconds), e.g. a rate limit's reset."""
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO factory_state (key, value) VALUES ('paused_until', ?) "
+            # Both cast: value is TEXT, and SQLite ranks any text above any number
+            "ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS REAL), CAST(excluded.value AS REAL))",
+            (float(timestamp),),
+        )
+
+
+def paused_until() -> float | None:
+    """The pause's end, while one is in force."""
+    with _db() as conn:
+        row = conn.execute("SELECT value FROM factory_state WHERE key = 'paused_until'").fetchone()
+    if row is None or float(row["value"]) <= time.time():
+        return None
+    return float(row["value"])
 
 
 def events(issue_id: str) -> list[sqlite3.Row]:
     with _db() as conn:
         return conn.execute("SELECT * FROM events WHERE issue_id = ? ORDER BY id", (issue_id,)).fetchall()
+
+
+def add_event(issue_id: str, detail: str, actor: str = "worker"):
+    """Record something that happened to the issue without changing its status."""
+    with _db() as conn:
+        status = conn.execute("SELECT status FROM issues WHERE id = ?", (issue_id,)).fetchone()["status"]
+        _event(conn, issue_id, status, status, actor, detail)
 
 
 def start_run(issue_id: str, phase: str, owner: str) -> int:
@@ -190,12 +372,12 @@ def start_run(issue_id: str, phase: str, owner: str) -> int:
         return cursor.lastrowid
 
 
-def finish_run(run_id: int, result=None, error: str | None = None):
+def finish_run(run_id: int, result=None, error: str | None = None, rate_limited: bool = False):
     """Close a run with the agent's ResultMessage, if one came back, and any error."""
     with _db() as conn:
         conn.execute(
             """UPDATE runs SET ended_at = ?, session_id = ?, subtype = ?, is_error = ?, num_turns = ?,
-                   cost_usd = ?, duration_ms = ?, result_text = ?, error = ? WHERE id = ?""",
+                   cost_usd = ?, duration_ms = ?, result_text = ?, error = ?, rate_limited = ? WHERE id = ?""",
             (
                 _now(),
                 getattr(result, "session_id", None),
@@ -206,6 +388,7 @@ def finish_run(run_id: int, result=None, error: str | None = None):
                 getattr(result, "duration_ms", None),
                 getattr(result, "result", None),
                 error,
+                rate_limited,
                 run_id,
             ),
         )
@@ -216,23 +399,31 @@ def runs(issue_id: str) -> list[sqlite3.Row]:
         return conn.execute("SELECT * FROM runs WHERE issue_id = ? ORDER BY id", (issue_id,)).fetchall()
 
 
-def reap_interrupted(owner: str) -> list[str]:
-    """Close runs a crashed or restarted process left open and flag their issues.
+def requeue_orphans() -> list[str]:
+    """Put issues left in a running status back on their queues.
 
-    Call at startup, before this owner starts any run. Returns the flagged issue ids.
+    Only the worker runs agents, so at its startup nothing can still be running. Call before
+    it claims any work. Returns the requeued issue ids.
     """
     with _db() as conn:
-        open_runs = conn.execute(
-            "SELECT id, issue_id FROM runs WHERE owner = ? AND ended_at IS NULL", (owner,)
+        open_runs = conn.execute("SELECT id FROM runs WHERE ended_at IS NULL").fetchall()
+        orphans = conn.execute(
+            f"SELECT id FROM issues WHERE status IN ({','.join('?' * len(REQUEUE_TO))})",
+            tuple(REQUEUE_TO),
         ).fetchall()
     for run in open_runs:
-        finish_run(run["id"], error="Interrupted: the process running it stopped")
-        transition(run["issue_id"], NEEDS_ATTENTION, reason=f"Interrupted: the {owner} process restarted mid-run")
-    return [run["issue_id"] for run in open_runs]
+        finish_run(run["id"], error="Interrupted: the worker stopped")
+    return [row["id"] for row in orphans if requeue(row["id"], "Interrupted: the worker restarted")]
 
 
 def allowed_actions(issue: sqlite3.Row) -> list[str]:
-    """Reviewer actions for the issue's current status. Both resume the planning session."""
-    if issue is None or not issue["session_id"] or not (issue_dir(issue["id"]) / "plan.md").exists():
+    """Reviewer actions for the issue's current status."""
+    if issue is None:
         return []
-    return [action for action, statuses in ACTIONS.items() if issue["status"] in statuses]
+    has_plan = bool(issue["session_id"]) and (issue_dir(issue["id"]) / "plan.md").exists()
+    actions = []
+    if has_plan:
+        actions += [a for a in ("approve", "rework") if issue["status"] in ACTIONS[a]]
+    elif issue["status"] in ACTIONS["retry"]:
+        actions.append("retry")
+    return actions

@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -16,13 +17,15 @@ from claude_agent_sdk import (
     HookMatcher,
     PermissionResultAllow,
     PermissionResultDeny,
+    RateLimitEvent,
     ResultMessage,
 )
-from dotenv import load_dotenv
 
-from software_factory import store
+from software_factory import config, linear, store
+from software_factory.config import ADO_API_VERSION, ADO_REPO_API, ADO_REPO_URL, BASE_BRANCH
+from software_factory.environment import agent_env, branch_name, prepare_worktree
 from software_factory.langfuse_client import fetch_conversation
-from software_factory.queries import ISSUE_BY_LABEL_QUERY, ISSUE_DETAIL_QUERY
+from software_factory.linear import get_issue
 from software_factory.trace_cleaner import clean_conversation, render_markdown
 from software_factory.utils import (
     download_uploads,
@@ -32,59 +35,8 @@ from software_factory.utils import (
     write_conversation_json,
 )
 
-load_dotenv()
-
-LINEAR_API_URL = "https://api.linear.app/graphql"
-LANGFUSE_URL = "http://10.60.227.122:3000"
-
-
-class LinearError(RuntimeError):
-    pass
-
-
-def linear_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        headers={"Authorization": str(os.getenv("LINEAR_API_KEY"))},
-        verify=ssl_context(),
-        timeout=30,
-    )
-
-
-async def linear_query(client: httpx.AsyncClient, query: str, variables: dict) -> dict:
-    result = await client.post(LINEAR_API_URL, json={"query": query, "variables": variables})
-    # GraphQL errors come back with a JSON body even on a 400, and say more than the status
-    try:
-        body = result.json()
-    except ValueError:
-        body = {}
-    if errors := body.get("errors"):
-        raise LinearError("; ".join(e.get("message", str(e)) for e in errors))
-    result.raise_for_status()
-    return body["data"]
-
-
-async def list_todo_bugs():
-    issues, after = [], None
-    async with linear_client() as client:
-        while True:
-            data = await linear_query(
-                client,
-                ISSUE_BY_LABEL_QUERY,
-                {"statusName": "Todo", "labelName": "Bug", "after": after},
-            )
-            page = data["issues"]
-            issues += page["nodes"]
-            if not page["pageInfo"]["hasNextPage"]:
-                return issues
-            after = page["pageInfo"]["endCursor"]
-
-
-async def get_issue(issue_id: str):
-    async with linear_client() as client:
-        data = await linear_query(client, ISSUE_DETAIL_QUERY, {"id": issue_id})
-    if data["issue"] is None:
-        raise LinearError(f"Issue {issue_id} not found")
-    return data["issue"]
+# How long to pause when a rate limit gives no reset time
+DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 15 * 60
 
 
 SYSTEM_PROMPT = """
@@ -98,6 +50,9 @@ Workflow:
    tool calls and results, or the prompt.
 3. Analyze the codebase thorougly to understand what is actually causing the issue.
 3. Fix the root cause with the smallest change, and add or update a test where one fits.
+
+Your worktree has a slot of its own: its ports, database and Redis queue are already set in
+your environment. To run the app, follow docs/agents/running-the-app.md.
 
 Prompts named like awp/... are managed in Langfuse, not in this repo. If the fix is a
 prompt change, write the full new prompt to prompt-changes/<prompt-name>.md and report it.
@@ -149,6 +104,13 @@ and commit on the current branch. Do not push.
 IMPLEMENT_PROMPT = (
     "Plan approved. Implement it, run the relevant tests, and commit on the current branch. "
     "Do not push or open a PR. End with a short report: root cause, what changed, tests run."
+)
+
+CONTINUE_PROMPT = (
+    "Your previous run was cut off before it finished. Check what is already done "
+    "(git status, git log), then continue implementing the approved plan, run the relevant "
+    "tests, and commit on the current branch. Do not push or open a PR. End with a short "
+    "report: root cause, what changed, tests run."
 )
 
 REWORK_PROMPT = (
@@ -237,45 +199,17 @@ NO_QUESTIONS = (
     "open questions and continue."
 )
 
-# Worktree setup
-BASE_BRANCH = "dev"
-MAIN_CHECKOUT_PATH = Path("C:/Users/ar14152/code/cpc-agentic-workplace-platform")
-WORKTREE_PATH = Path(
-    "C:/Users/ar14152/code/cpc-agentic-workplace-platform/.claude/worktrees"
-)
-
-# Azure DevOps Server repo behind `origin`
-ADO_REPO_URL = "https://devops.cpc.gov.ae/tfs/Applications/CPC-DataLakehousePlatform/_git/agentic-workplace-platform"
-ADO_REPO_API = "https://devops.cpc.gov.ae/tfs/Applications/CPC-DataLakehousePlatform/_apis/git/repositories/agentic-workplace-platform"
-ADO_API_VERSION = "6.0"
 # PR descriptions over 4000 characters are rejected
 ADO_DESCRIPTION_LIMIT = 4000
 
 
-def ensure_worktree(issue_identifier: str) -> Path:
-    path = Path(WORKTREE_PATH / issue_identifier)
-    if not path.exists():
-        # Branch from the remote tip so the fix starts on the latest dev. Fetching
-        # leaves the main checkout's working tree and local dev branch untouched.
-        subprocess.run(
-            ["git", "-C", str(MAIN_CHECKOUT_PATH), "fetch", "origin", BASE_BRANCH],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(MAIN_CHECKOUT_PATH),
-                "worktree",
-                "add",
-                "-b",
-                f"fix/{issue_identifier}",
-                str(path),
-                f"origin/{BASE_BRANCH}",
-            ],
-            check=True,
-        )
-    return path
+def ensure_worktree(issue) -> Path:
+    return prepare_worktree(issue)
+
+
+async def worktree_for(issue) -> Path:
+    # Creating one runs git and the slot's provisioning, which mustn't block other runs
+    return await anyio.to_thread.run_sync(ensure_worktree, issue)
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -360,30 +294,43 @@ async def run_agent(
 ) -> ResultMessage | None:
     """Run one agent session and record it in runs.
 
-    Returns the ResultMessage, or None if the run crashed or was cut off, in which case
-    the issue has already been flagged.
+    Returns the ResultMessage, or None if the run crashed or was cut off. A crash flags the
+    issue. A rate limit pauses the worker and puts the issue back on its queue, so the
+    caller's checks, which expect the status the run started in, leave it alone.
     """
     run_id = store.start_run(issue_id, phase, owner)
     result = None
-    # Stays set if the run is cancelled or interrupted before it completes
+    rejected_until = None
+    # Stays set if the run is cancelled or interrupted before it completes. The worker
+    # requeues those issues when it next starts, so they aren't flagged here.
     error = "Interrupted before the run finished"
+    crashed = False
     try:
         async with ClaudeSDKClient(options=replace(options, **LIMITS[phase])) as client:
             await client.query(prompt)
             async for msg in client.receive_response():
+                if isinstance(msg, RateLimitEvent) and msg.rate_limit_info.status == "rejected":
+                    rejected_until = msg.rate_limit_info.resets_at or time.time() + DEFAULT_RATE_LIMIT_PAUSE_SECONDS
                 if isinstance(msg, ResultMessage):
                     result = msg
         error = None
     except Exception as e:
         traceback.print_exc()
         error = f"The {phase} run crashed: {e!r}"
+        crashed = True
     finally:
-        store.finish_run(run_id, result, error)
-        if error:
+        # A rejection the CLI recovered from (overage, a retry) doesn't count
+        failed = result is None or result.is_error
+        rate_limited = failed and (rejected_until is not None or getattr(result, "api_error_status", None) == 429)
+        store.finish_run(run_id, result, error, rate_limited=rate_limited)
+        if rate_limited:
+            store.pause_until(rejected_until or time.time() + DEFAULT_RATE_LIMIT_PAUSE_SECONDS)
+            store.requeue(issue_id, f"The {phase} run hit a rate limit")
+        elif crashed:
             store.transition(issue_id, store.NEEDS_ATTENTION, reason=error)
     if result and result.session_id:
         store.set_fields(issue_id, session_id=result.session_id)
-    return result
+    return None if error or rate_limited else result
 
 
 def run_succeeded(issue_id: str, phase: str, result: ResultMessage | None, during: str) -> bool:
@@ -410,29 +357,31 @@ def check_plan_outcome(issue_id: str, result: ResultMessage | None, during: str)
     )
 
 
-def planning_options(issue_id: str, worktree: Path, ws: Path, **extra) -> ClaudeAgentOptions:
+def planning_options(issue, worktree: Path, ws: Path, **extra) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
-        model="sonnet",
+        model=config.PLAN_MODEL,
         system_prompt=AGENT_SYSTEM_PROMPT,
         permission_mode="plan",
         # Deny rules run before can_use_tool and the permission mode, so these can't be overridden
         disallowed_tools=PLAN_DISALLOWED_TOOLS,
         hooks=NO_PUSH_HOOKS,
         cwd=worktree,
-        can_use_tool=plan_phase_can_use_tool(issue_id, ws),
+        env=agent_env(issue),
+        can_use_tool=plan_phase_can_use_tool(issue["id"], ws),
         **extra,
     )
 
 
-def implementation_options(issue: dict, worktree: Path) -> ClaudeAgentOptions:
+def implementation_options(issue, worktree: Path) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         resume=issue["session_id"],
-        model="sonnet",
+        model=config.IMPLEMENT_MODEL,
         system_prompt=AGENT_SYSTEM_PROMPT,
         permission_mode="auto",
         disallowed_tools=PUSH_DENY_RULES,
         hooks=NO_PUSH_HOOKS,
         cwd=worktree,
+        env=agent_env(issue),
     )
 
 
@@ -473,7 +422,7 @@ async def gather_context(bug_info: dict, ws: Path) -> str | None:
             return None
         try:
             _, traces = await fetch_conversation(
-                conversation_id, LANGFUSE_URL, str(os.getenv("LANGFUSE_ENCODED_TOKEN"))
+                conversation_id, config.LANGFUSE_URL, str(os.getenv("LANGFUSE_ENCODED_TOKEN"))
             )
         except httpx.HTTPError as e:
             store.transition(
@@ -486,7 +435,7 @@ async def gather_context(bug_info: dict, ws: Path) -> str | None:
         # The markdown truncates long values (tool results, retrieved chunks); the JSON keeps them
         data_path = write_conversation_json(conversation, ws / "conversation.json")
         langfuse_trace_md = render_markdown(
-            conversation, base_url=LANGFUSE_URL, data_path=str(data_path)
+            conversation, base_url=config.LANGFUSE_URL, data_path=str(data_path)
         )
         sections.append(f"<bug_context>\n{langfuse_trace_md}\n</bug_context>")
 
@@ -499,9 +448,11 @@ async def gather_context(bug_info: dict, ws: Path) -> str | None:
 
 
 async def triage_and_plan_issue(issue_id: str, owner: str = "cli"):
+    """Plan a fix for an issue the worker claimed, which gave it a slot."""
     bug_info = await get_issue(issue_id)
     issue_id = bug_info["id"]
     store.upsert_issue(issue_id, bug_info["identifier"], bug_info["title"], bug_info.get("url"))
+    await linear.report_state(issue_id, config.LINEAR_IN_PROGRESS_STATE)
     ws = store.issue_dir(issue_id)
     ws.mkdir(parents=True, exist_ok=True)
 
@@ -509,8 +460,9 @@ async def triage_and_plan_issue(issue_id: str, owner: str = "cli"):
         bug_prompt = await gather_context(bug_info, ws)
         if bug_prompt is None:
             return
+        issue = store.get_issue(issue_id)
+        options = planning_options(issue, await worktree_for(issue), ws)
         store.transition(issue_id, store.PLANNING)
-        options = planning_options(issue_id, ensure_worktree(bug_info["identifier"]), ws)
     except Exception as e:
         traceback.print_exc()
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"Gathering context failed: {e!r}")
@@ -524,9 +476,7 @@ async def triage_and_plan_issue(issue_id: str, owner: str = "cli"):
 async def rework_plan(issue_id: str, feedback: str | None, owner: str = "cli"):
     issue = store.get_issue(issue_id)
     ws = store.issue_dir(issue_id)
-    options = planning_options(
-        issue_id, ensure_worktree(issue["identifier"]), ws, resume=issue["session_id"]
-    )
+    options = planning_options(issue, await worktree_for(issue), ws, resume=issue["session_id"])
     # An empty prompt would resume the session with no instruction, which the
     # agent reads as the earlier ExitPlanMode denial.
     prompt = REWORK_PROMPT.format(feedback=feedback or "No specific feedback given.")
@@ -536,10 +486,10 @@ async def rework_plan(issue_id: str, feedback: str | None, owner: str = "cli"):
 
 async def implement_plan(issue_id: str, owner: str = "cli") -> bool:
     issue = store.get_issue(issue_id)
-    worktree = ensure_worktree(issue["identifier"])
-    result = await run_agent(
-        issue_id, "implement", implementation_options(issue, worktree), IMPLEMENT_PROMPT, owner
-    )
+    worktree = await worktree_for(issue)
+    # A run that was cut off (rate limit, worker restart) left work behind to pick up
+    prompt = CONTINUE_PROMPT if issue["attempts"] else IMPLEMENT_PROMPT
+    result = await run_agent(issue_id, "implement", implementation_options(issue, worktree), prompt, owner)
     if not run_succeeded(issue_id, "implement", result, during=store.IMPLEMENTING):
         return False
     # Only the implementation's report goes in the PR; rework results stay on their run
@@ -549,7 +499,7 @@ async def implement_plan(issue_id: str, owner: str = "cli") -> bool:
 
 async def fix_review_findings(issue_id: str, review_md: str, owner: str = "cli") -> bool:
     issue = store.get_issue(issue_id)
-    worktree = ensure_worktree(issue["identifier"])
+    worktree = await worktree_for(issue)
     result = await run_agent(
         issue_id,
         "fix",
@@ -560,8 +510,10 @@ async def fix_review_findings(issue_id: str, review_md: str, owner: str = "cli")
     return run_succeeded(issue_id, "fix", result, during=store.FIXING)
 
 
-def pr_description(ws: Path, issue_url: str | None = None) -> str:
-    parts = [f"Linear issue: {issue_url}"] if issue_url else []
+def pr_description(ws: Path, issue_url: str | None = None, plan_url: str | None = None) -> str:
+    links = [f"Linear issue: {issue_url}"] if issue_url else []
+    links += [f"Approved plan: {plan_url}"] if plan_url else []
+    parts = ["\n".join(links)] if links else []
     parts += [
         p.read_text(encoding="utf-8")
         for p in (ws / "report.md", ws / "review.md")
@@ -575,9 +527,7 @@ def pr_description(ws: Path, issue_url: str | None = None) -> str:
 
 async def create_pull_request(branch: str, title: str, description: str) -> str:
     """Open a draft PR for branch into BASE_BRANCH, or reuse an active one. Returns its web URL."""
-    pat = os.getenv("AZURE_DEVOPS_PAT")
-    if not pat:
-        raise RuntimeError("AZURE_DEVOPS_PAT is not set")
+    pat = config.ado_pat()
 
     source_ref = f"refs/heads/{branch}"
     async with httpx.AsyncClient(
@@ -615,8 +565,8 @@ async def open_pull_request(issue_id: str):
     """Push the fix branch and open a draft PR, recording its URL on the issue."""
     issue = store.get_issue(issue_id)
     ws = store.issue_dir(issue_id)
-    worktree = ensure_worktree(issue["identifier"])
-    branch = f"fix/{issue['identifier']}"
+    worktree = await worktree_for(issue)
+    branch = branch_name(issue["identifier"])
 
     if reason := check_branch(worktree):
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=reason)
@@ -631,13 +581,15 @@ async def open_pull_request(issue_id: str):
         return
 
     title = f"{issue['identifier']}: {issue['title']}".rstrip(": ")
+    plan_url = f"{config.PUBLIC_URL}/issue/{issue_id}/plan" if config.PUBLIC_URL else None
     try:
-        pr_url = await create_pull_request(branch, title, pr_description(ws, issue["url"]))
+        pr_url = await create_pull_request(branch, title, pr_description(ws, issue["url"], plan_url))
     except (httpx.HTTPError, RuntimeError) as e:
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"PR creation failed: {e}")
         return
 
-    store.set_fields(issue_id, pr_url=pr_url)
+    # The merge watch looks the PR up by the id at the end of its URL
+    store.set_fields(issue_id, pr_url=pr_url, pr_id=int(pr_url.rsplit("/", 1)[1]))
     store.transition(issue_id, store.PR_OPENED)
 
 
@@ -659,7 +611,7 @@ async def review_changes(issue_id: str, worktree: Path, ws: Path, owner: str = "
     prompt = issue + "\n\n" + REVIEW_PROMPT.format(plan=plan, base=f"origin/{BASE_BRANCH}")
 
     options = ClaudeAgentOptions(
-        model="sonnet",
+        model=config.REVIEW_MODEL,
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
@@ -669,6 +621,7 @@ async def review_changes(issue_id: str, worktree: Path, ws: Path, owner: str = "
         disallowed_tools=["Edit", "MultiEdit", "Write", "NotebookEdit", *PUSH_DENY_RULES],
         hooks=NO_PUSH_HOOKS,
         cwd=worktree,
+        env=agent_env(store.get_issue(issue_id)),
         can_use_tool=can_use_tool,
         output_format={"type": "json_schema", "schema": REVIEW_SCHEMA},
     )
@@ -685,7 +638,7 @@ async def review_and_gate(issue_id: str, owner: str = "cli") -> bool:
     """
     issue = store.get_issue(issue_id)
     ws = store.issue_dir(issue_id)
-    worktree = ensure_worktree(issue["identifier"])
+    worktree = await worktree_for(issue)
 
     if reason := check_branch(worktree):
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=reason)
@@ -740,18 +693,3 @@ async def implement_and_review(
     except Exception as e:
         traceback.print_exc()
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"Unexpected error: {e!r}")
-
-
-async def _run():
-    todo_issues = await list_todo_bugs()
-
-    for issue in todo_issues[-3:]:
-        print(issue)
-        # await triage_and_plan_issue(issue["id"])
-
-def main() -> None:
-    anyio.run(_run)
-
-
-if __name__ == "__main__":
-    main()
