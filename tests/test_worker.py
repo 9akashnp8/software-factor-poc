@@ -110,6 +110,22 @@ def test_run_job_routes_to_the_pipeline(monkeypatch, job, expected):
     assert calls == [expected]
 
 
+def test_publish_job_only_opens_the_pr(monkeypatch):
+    seed_issue(store.WORK_COMPLETED, issue_id="t1")
+    calls = []
+
+    async def fake_open(issue_id):
+        calls.append(issue_id)
+
+    async def no_agent(*args, **kwargs):
+        raise AssertionError("publishing mustn't run the agent")
+
+    monkeypatch.setattr(worker.pipeline, "open_pull_request", fake_open)
+    monkeypatch.setattr(worker.pipeline, "implement_and_review", no_agent)
+    anyio.run(worker.run_job, "t1", "publish")
+    assert calls == ["t1"]
+
+
 def test_finished_bug_back_in_todo_is_triaged_again_with_its_history(monkeypatch):
     ws = seed_issue(store.MERGED, slot=None, pr_url="https://ado/pullrequest/7", pr_id=7)
     (ws / "plan.md").write_text("# Old plan")

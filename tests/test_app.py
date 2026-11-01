@@ -153,3 +153,12 @@ def test_plan_page_warns_about_overlapping_work(client, ws, monkeypatch):
     monkeypatch.setattr(web, "overlaps", lambda issue: [("BEI-2", store.PR_OPENED, ["apps/api/router.py"])])
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
     assert "Likely to conflict" in page and "BEI-2" in page and "apps/api/router.py" in page
+
+
+def test_open_pr_queues_publishing(client, ws):
+    store.transition("issue-1", store.NEEDS_ATTENTION, reason="Uncommitted changes left in the worktree: x.ts")
+    (ws / "report.md").write_text("Root cause: x")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Open PR" in page
+    client.post("/issue/issue-1/open-pr", headers=AUTH, data={"csrf_token": csrf_token(client)})
+    assert store.get_issue("issue-1")["status"] == store.PUBLISH_QUEUED

@@ -91,7 +91,26 @@ def test_check_branch_ignores_stale_local_base(repo):
 def test_check_branch_with_dirty_tree(repo):
     commit(repo, "fix.txt")
     (repo / "stray.txt").write_text("x")
-    assert main.check_branch(repo) == "Uncommitted changes left in the worktree"
+    assert main.check_branch(repo) == "Uncommitted changes left in the worktree: stray.txt"
+
+
+def test_check_branch_ignores_line_ending_rewrites(repo):
+    # A commit hook (prettier) rewrites committed CRLF files with LF while core.autocrlf
+    # is on: git status lists them as modified, but their content is what was committed
+    run(repo, "config", "core.autocrlf", "true")
+    (repo / "fix.ts").write_bytes(b"a\r\nb\r\n")
+    run(repo, "add", "fix.ts")
+    run(repo, "commit", "-m", "fix")
+    (repo / "fix.ts").write_bytes(b"a\nb\n")
+    assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
+    assert main.check_branch(repo) is None
+
+
+def test_check_branch_lists_real_changes(repo):
+    commit(repo, "fix.txt")
+    (repo / "fix.txt").write_text("changed after the commit")
+    (repo / "new.txt").write_text("untracked")
+    assert main.check_branch(repo) == "Uncommitted changes left in the worktree: fix.txt, new.txt"
 
 
 def test_check_branch_ready(repo):

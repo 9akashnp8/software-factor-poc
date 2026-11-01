@@ -253,13 +253,26 @@ def git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def uncommitted_files(worktree: Path) -> list[str]:
+    """Files whose content differs from HEAD, and untracked files.
+
+    Not `git status`: with core.autocrlf on, a commit hook that rewrites files with LF
+    endings (prettier does) leaves them listed as modified though their content is
+    committed. `git diff` compares the normalised content, so it doesn't count those.
+    """
+    changed = git(worktree, "diff", "HEAD", "--name-only").splitlines()
+    untracked = git(worktree, "ls-files", "--others", "--exclude-standard").splitlines()
+    return changed + untracked
+
+
 def check_branch(worktree: Path) -> str | None:
     """Return why the branch isn't ready for review, or None if it is."""
     # origin/dev is what the worktree branched from; the local dev may be stale
     if int(git(worktree, "rev-list", "--count", f"origin/{BASE_BRANCH}..HEAD")) == 0:
         return f"No commits ahead of origin/{BASE_BRANCH}"
-    if git(worktree, "status", "--porcelain"):
-        return "Uncommitted changes left in the worktree"
+    if files := uncommitted_files(worktree):
+        shown = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
+        return f"Uncommitted changes left in the worktree: {shown}"
     return None
 
 

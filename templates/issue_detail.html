@@ -66,6 +66,14 @@
     </form>
     {% endif %}
 
+    {% if 'publish' in actions %}
+    <form method="post" action="{{ url_for('open_pr', issue_id=issue.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <button type="submit">Open PR</button>
+        <small>Push the committed fix and open its PR, without running the agent again.</small>
+    </form>
+    {% endif %}
+
     {% if 'release' in actions %}
     <hr>
     <form method="post" action="{{ url_for('release_issue', issue_id=issue.id) }}"

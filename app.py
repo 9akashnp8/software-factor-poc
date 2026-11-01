@@ -134,6 +134,10 @@ def rework_plan(issue_id: str):
 def retry_triage(issue_id: str):
     return _queue(issue_id, "retry")
 
+@app.route("/issue/<issue_id>/open-pr", methods=["POST"])
+def open_pr(issue_id: str):
+    return _queue(issue_id, "publish")
+
 @app.route("/issue/<issue_id>/release", methods=["POST"])
 def release_issue(issue_id: str):
     return _queue(issue_id, "release")
