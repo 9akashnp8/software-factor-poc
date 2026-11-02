@@ -318,7 +318,7 @@ a:focus-visible, summary:focus-visible { border-radius: var(--radius-sm); }
 .sf-top-note { margin-left: auto; }
 
 .sf-page { max-width: 1360px; margin: 0 auto; padding: var(--space-4) var(--space-6) var(--space-12); box-sizing: border-box; }
-.sf-page.is-reading { max-width: 880px; }
+.sf-page.is-reading, .sf-page.is-issue { max-width: 880px; }
 .sf-page > .sf-banner { margin-bottom: var(--space-4); }
 .sf-back { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); text-decoration: none; margin-bottom: var(--space-3); }
 .sf-back:hover { color: var(--link); }
@@ -352,6 +352,14 @@ a:focus-visible, summary:focus-visible { border-radius: var(--radius-sm); }
 .sf-issue-meta a:hover { text-decoration: underline; }
 .sf-issue-head h1 { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .sf-section { margin-top: var(--space-6); }
+/* The plan and its decision in the main column; actions, runs and history beside it once there is room */
+.sf-issue-layout { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: var(--space-6); }
+.sf-issue-main, .sf-issue-rail { min-width: 0; }
+@media (min-width: 1200px) {
+  .sf-page.is-issue { max-width: 1360px; }
+  .sf-issue-layout { grid-template-columns: minmax(0, 1fr) 360px; align-items: start; }
+  .sf-issue-rail > :first-child { margin-top: 0; }
+}
 .sf-section-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
 .sf-section-head h2 { font-size: 16px; line-height: 24px; font-weight: 600; }
 .sf-section-head a { margin-left: auto; font-size: 12px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
@@ -379,7 +387,8 @@ a:focus-visible, summary:focus-visible { border-radius: var(--radius-sm); }
 .sf-action p { margin: 0; flex: 1 1 280px; color: var(--ink-muted); }
 
 /* Reading: plans, issue context and PR descriptions */
-.sf-prose { font-size: 15px; line-height: 24px; max-width: 72ch; overflow-wrap: anywhere; color: var(--ink); }
+.sf-prose { font-size: 15px; line-height: 24px; overflow-wrap: anywhere; color: var(--ink); }
+.sf-prose > :is(p, ul, ol, blockquote, h1, h2, h3, h4) { max-width: 72ch; }
 .sf-panel > .sf-prose { padding: var(--space-2) var(--space-6) var(--space-4); }
 .sf-prose > :first-child { margin-top: 0; }
 .sf-prose h1, .sf-prose h2, .sf-prose h3, .sf-prose h4 { font-size: 16px; line-height: 24px; font-weight: 600; margin: var(--space-6) 0 var(--space-2); }
@@ -397,14 +406,16 @@ a:focus-visible, summary:focus-visible { border-radius: var(--radius-sm); }
 .sf-prose th, .sf-prose td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
 .sf-prose th { background: var(--surface-sunken); font-weight: 600; }
 
-/* Data tables: agent runs */
-.sf-table-wrap { overflow-x: auto; }
-.sf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.sf-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--ink-muted); background: var(--surface-sunken); padding: 8px var(--space-4); border-bottom: 1px solid var(--line); white-space: nowrap; }
-.sf-table td { padding: 10px var(--space-4); border-top: 1px solid var(--line); vertical-align: top; }
-.sf-table tr:first-child td { border-top: 0; }
-.sf-table .is-num { text-align: right; }
-.sf-table-error { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--danger); overflow-wrap: anywhere; }
+/* Agent runs: one per row, narrow enough for the rail */
+.sf-runs { list-style: none; margin: 0; padding: 0; }
+.sf-run { padding: 10px var(--space-4); border-top: 1px solid var(--line); }
+.sf-run:first-child { border-top: 0; }
+.sf-run-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-2); }
+.sf-run-phase { font-weight: 500; color: var(--ink); }
+.sf-run-ago { margin-left: auto; font-size: 12px; color: var(--ink-muted); }
+.sf-run-meta { margin-top: 2px; font-size: 12px; color: var(--ink-muted); }
+
+.sf-run-error { display: block; margin-top: 4px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--danger); overflow-wrap: anywhere; }
 
 .sf-panel > .sf-timeline { padding: 0 var(--space-4); }
 .sf-pr-more { border-top: 1px solid var(--line); }
