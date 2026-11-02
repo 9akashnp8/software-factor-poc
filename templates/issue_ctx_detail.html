@@ -1,19 +1,22 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 
-{% block title %}{{ issue.identifier }} - Issue Context{% endblock %}
+{% block title %}{{ issue.identifier }} context{% endblock %}
+{% block page_class %}is-reading{% endblock %}
 
 {% block content %}
-    <p><a href="{{ url_for('issue_detail', issue_id=issue.id) }}">← Back to Issue Plan</a></p>
+    <a class="sf-back" href="{{ url_for('issue_detail', issue_id=issue.id) }}">{{ ui.icon("arrow-right", 14) }}{{ issue.identifier }}</a>
 
-    <h1>Issue context: {{ issue.identifier }}</h1>
-    <hr>
+    <div class="sf-issue-head">
+        <div class="sf-issue-meta"><span class="sf-mono">{{ issue.identifier }}</span><span class="sf-muted">Issue context</span></div>
+        <h1>{{ issue.title or issue.identifier }}</h1>
+    </div>
 
-    {% if html_content %}
-        <article class="markdown-body" style="padding: 20px 0;">
-            {{ html_content }}
-        </article>
-    {% else %}
-        <p style="color: #888; font-style: italic;">No issue context gathered yet.</p>
-    {% endif %}
-
+    <div class="sf-panel">
+        {% if html_content %}
+            <article class="sf-prose">{{ html_content }}</article>
+        {% else %}
+            <div class="sf-empty is-compact sf-empty-plan"><p class="sf-empty-body">No issue context gathered yet.</p></div>
+        {% endif %}
+    </div>
 {% endblock %}

@@ -3,86 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{% block title %}My App{% endblock %}</title>
-    <style>
-      body {
-        font-family: sans-serif;
-        margin: 40px;
-        background-color: #fafafa;
-      }
-      /* Pages that set page_class to "wide" draw their own surfaces on the page background */
-      .container.wide {
-        max-width: 1360px;
-        background: none;
-        padding: 0;
-        box-shadow: none;
-      }
-      .container {
-        max-width: 800px;
-        margin: 0 auto;
-        background: white;
-        padding: 20px;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      }
-      /* The issue list's rows are cards; every other list, plans included, stays a list */
-      .issue-list ul {
-        list-style-type: none;
-        padding: 0;
-      }
-      .issue-list li {
-        padding: 12px;
-        margin-bottom: 8px;
-        background: #f4f4f9;
-        border-radius: 4px;
-        display: flex;
-        align-items: center;
-      }
-      .markdown-body {
-        line-height: 1.55;
-        overflow-wrap: anywhere;
-      }
-      .markdown-body li + li,
-      .markdown-body li > ul,
-      .markdown-body li > ol {
-        margin-top: 4px;
-      }
-      .markdown-body code {
-        background: #f4f4f9;
-        padding: 1px 4px;
-        border-radius: 3px;
-        font-size: 0.9em;
-      }
-      .markdown-body pre {
-        background: #f4f4f9;
-        padding: 12px;
-        border-radius: 4px;
-        overflow-x: auto;
-      }
-      .markdown-body pre code {
-        background: none;
-        padding: 0;
-      }
-      .markdown-body table {
-        border-collapse: collapse;
-      }
-      .markdown-body th,
-      .markdown-body td {
-        border: 1px solid #ddd;
-        padding: 6px 10px;
-        text-align: left;
-      }
-    </style>
+    <title>{% block title %}Software Factory{% endblock %} · Software Factory</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='factory.css') }}" />
   </head>
   <body>
-    <div class="container {% block page_class %}{% endblock %}">
+    <header class="sf-top">
+      <a class="sf-wordmark" href="{{ url_for('issue_home') }}"><span class="sf-wordmark-mark" aria-hidden="true"></span>Software Factory</a>
+      {% block top %}{% endblock %}
+    </header>
+    <main class="sf-page {% block page_class %}{% endblock %}">
       {% if paused_until %}
-      <p style="background: #fff4e5; padding: 8px 12px; border-radius: 4px;">
-        Rate limited: the worker starts no new runs until {{ paused_until }}.
-      </p>
+      <div class="sf-banner sf-banner-warn" role="status">
+        <svg class="sf-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75V8l2.25 1.5"/></svg>
+        <div class="sf-banner-body">Rate limited: the worker starts no new runs until <span class="sf-mono">{{ paused_until }}</span>.</div>
+      </div>
       {% endif %}
       {% block content %}
       {% endblock %}
-    </div>
+    </main>
   </body>
 </html>

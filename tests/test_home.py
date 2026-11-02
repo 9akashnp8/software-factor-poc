@@ -57,3 +57,27 @@ def test_activity_marks_failures():
     assert first["identifier"] == "BEI-1"
     assert first["kind"] == "attn"
     assert "8885" in first["text"]
+
+
+def test_every_status_has_a_place_in_the_flow():
+    assert set(home.STATUS_LOOK) <= set(home.FLOW) | home.STOPPED | {store.NEEDS_ATTENTION}
+
+
+def test_flow_marks_the_stage_waiting_on_someone():
+    seed_issue(store.PLAN_READY)
+    issue = store.get_issue("issue-1")
+    flow = home.flow(issue, store.events("issue-1"))
+    states = {s["key"]: s["state"] for s in flow["stages"]}
+    assert states["analyzing"] == "past" and states["plan"] == "current" and states["implementing"] == "future"
+    assert flow["linear"] == "todo" and not flow["blocked"]
+    assert [b["span"] for b in flow["bands"]] == [3, 2, 1, 2]
+
+
+def test_a_blocked_issue_keeps_its_place():
+    seed_issue(store.IMPLEMENTING)
+    store.transition("issue-1", store.NEEDS_ATTENTION, reason="Tests failed")
+    flow = home.flow(store.get_issue("issue-1"), store.events("issue-1"))
+    current = next(s for s in flow["stages"] if s["state"] == "blocked")
+    assert current["key"] == "implementing" and current["kind"] == "attn"
+    # Implementation had started, so Linear already says In Progress
+    assert flow["linear"] == "in-progress" and flow["blocked"]
