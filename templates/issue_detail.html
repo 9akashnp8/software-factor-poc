@@ -1,121 +1,271 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 
-{% block title %}{{ issue.identifier }} - Details{% endblock %}
+{% block title %}{{ issue.identifier }}{% endblock %}
+{% block page_class %}is-reading{% endblock %}
 
 {% block content %}
-    <p><a href="{{ url_for('issue_home') }}">← Back to Issues</a></p>
+    {% set kind, label = look(issue.status) %}
+    <a class="sf-back" href="{{ url_for('issue_home') }}">{{ ui.icon("arrow-right", 14) }}Issues</a>
 
-    <h1>Issue: {{ issue.identifier }}</h1>
-    <p>{{ issue.title }}{% if issue.url %} · <a href="{{ issue.url }}">Linear</a>{% endif %}</p>
+    <div class="sf-issue-head">
+        <div class="sf-issue-meta">
+            <span class="sf-mono">{{ issue.identifier }}</span>
+            {{ ui.status(kind, label, tinted=true) }}
+            {% if linear_writeback and not flow.stopped %}{{ ui.linear_state(flow) }}{% endif %}
+            <span class="sf-muted sf-mono" title="{{ issue.updated_at }}">{{ issue.updated_at | ago }} ago</span>
+            {% if issue.url %}<a href="{{ issue.url }}" rel="noopener noreferrer">Open in Linear{{ ui.icon("external", 14) }}</a>{% endif %}
+        </div>
+        <h1>{{ issue.title or issue.identifier }}</h1>
+    </div>
 
     {% for message in get_flashed_messages() %}
-        <p style="color: #a15c00;">{{ message }}</p>
+    <div class="sf-banner sf-banner-warn" role="status" style="margin-bottom: 12px">
+        {{ ui.icon("alert") }}<div class="sf-banner-body">{{ message }}</div>
+    </div>
     {% endfor %}
 
-    <div>
-        <h2>Status: {{ issue.status }}</h2>
-        {% if issue.status == 'needs-attention' and issue.needs_attention_reason %}
-        <p style="color: #b00020; white-space: pre-wrap;">{{ issue.needs_attention_reason }}</p>
-        {% endif %}
-        {% if issue.pr_url %}
-        <a href="{{ issue.pr_url }}">PR Link</a>
-        {% endif %}
+    {% if flow.stopped %}
+    <div class="sf-banner" role="status">
+        {{ ui.icon("x") }}
+        <div class="sf-banner-body"><strong>{{ label | capitalize }}.</strong>The worktree, branch and slot are freed; Linear and any PR are left as they were.</div>
     </div>
-    <a href="{{ url_for('issue_context', issue_id=issue.id) }}">View Issue Context</a>
-    <hr>
-
-    {% if html_content %}
-        <article class="markdown-body" style="padding: 20px 0;">
-            {{ html_content }}
-        </article>
     {% else %}
-        <p style="color: #888; font-style: italic;">No plan yet.</p>
+    <div class="sf-panel sf-flow">
+        {{ ui.pipeline(flow, show_linear=linear_writeback) }}
+        {% if linear_writeback %}<p class="sf-flow-note">The worker moves the issue in Linear as it goes: {{ flow.bands[1].label }} when implementation starts, {{ flow.bands[2].label }} when the PR is merged, {{ flow.bands[3].label }} when the deploy completes.</p>{% endif %}
+    </div>
     {% endif %}
+
+    {% if issue.status == 'needs-attention' and issue.needs_attention_reason %}
+    {% set reason = issue.needs_attention_reason.strip().split('\n', 1) %}
+    <div class="sf-banner sf-banner-danger" role="alert" style="margin-top: 16px">
+        {{ ui.icon("alert") }}
+        <div class="sf-banner-body">
+            <p><strong>Needs attention.</strong>{{ reason[0] }}</p>
+            {% if reason | length > 1 %}<div class="sf-raw">{{ reason[1] }}</div>{% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if pr %}
+    <section class="sf-section" aria-labelledby="pr-heading">
+        <div class="sf-section-head"><h2 id="pr-heading">Pull request</h2></div>
+        <div class="sf-pr is-{{ pr.state }}">
+            <div class="sf-pr-head">
+                <span class="sf-pr-state">{{ ui.icon("merge" if pr.state == "merged" else "pull-request", 14) }}{{ pr.state | capitalize }}</span>
+                <a class="sf-pr-title" href="{{ pr.url }}" rel="noopener noreferrer">{{ pr.title }}{% if pr.number %} <span class="sf-pr-num sf-mono">!{{ pr.number }}</span>{% endif %}</a>
+                <span class="sf-pr-branch sf-mono">{{ ui.icon("branch", 14) }}{{ pr.branch }} <span class="sf-pr-base">→ {{ pr.base }}</span></span>
+            </div>
+            {% if pr.root_cause or pr.fix %}
+            <dl class="sf-pr-body">
+                {% if pr.root_cause %}<dt>Root cause</dt><dd>{{ pr.root_cause }}</dd>{% endif %}
+                {% if pr.fix %}<dt>Fix</dt><dd>{{ pr.fix }}</dd>{% endif %}
+            </dl>
+            {% endif %}
+            {% if pr.report %}
+            <details class="sf-pr-more">
+                <summary>Full description</summary>
+                <div class="sf-prose">{{ pr.report }}</div>
+            </details>
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="sf-section" aria-labelledby="plan-heading">
+        <div class="sf-section-head">
+            <h2 id="plan-heading">Plan</h2>
+            <a href="{{ url_for('issue_context', issue_id=issue.id) }}">Issue context{{ ui.icon("arrow-right", 14) }}</a>
+        </div>
+        <div class="sf-panel">
+            {% if html_content %}
+                <article class="sf-prose">{{ html_content }}</article>
+            {% else %}
+                <div class="sf-empty is-compact sf-empty-plan"><p class="sf-empty-body">No plan yet. The agent writes one after it has gathered the issue's context.</p></div>
+            {% endif %}
+        </div>
+    </section>
 
     {% if overlaps %}
-    <div style="background: #fff4e5; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px;">
-        <strong>Likely to conflict</strong> with other work in flight. Approving both is fine;
-        the second PR to merge will be sent back to merge the first in.
-        <ul>
-            {% for identifier, status, files in overlaps %}
-            <li>{{ identifier }} ({{ status }}): {{ files | join(', ') }}</li>
-            {% endfor %}
-        </ul>
+    <div class="sf-banner sf-banner-warn" style="margin-top: 16px">
+        {{ ui.icon("alert") }}
+        <div class="sf-banner-body">
+            <p><strong>Likely to conflict</strong> with other work in flight. Approving both is fine;
+            the second PR to merge will be sent back to merge the first in.</p>
+            <ul>
+                {% for identifier, status, files in overlaps %}
+                <li><span class="sf-mono">{{ identifier }}</span> ({{ look(status)[1] }}): <span class="sf-mono">{{ files | join(', ') }}</span></li>
+                {% endfor %}
+            </ul>
+        </div>
     </div>
     {% endif %}
 
-    {% if 'refresh' in actions %}
-    <div style="{% if dev_moved %}background: #fff4e5; {% endif %}padding: 8px 12px; border-radius: 4px; margin-bottom: 12px;">
-        <form method="post" action="{{ url_for('refresh_plan', issue_id=issue.id) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-            {% if dev_moved %}<strong>{{ dev_moved }}</strong> since this plan was written.{% endif %}
-            <button type="submit">Refresh plan</button>
-            <small>Update the worktree to the latest dev and have the planner check whether the plan still holds.</small>
+    {% if 'refresh' in actions and dev_moved %}
+    <div class="sf-banner sf-banner-warn" style="margin-top: 16px">
+        {{ ui.icon("branch") }}
+        <div class="sf-banner-body"><p><strong>{{ dev_moved }}</strong> since this plan was written.
+            Refreshing updates the worktree to the latest {{ base_branch }} and has the planner check whether the plan still holds.</p></div>
+        <form class="sf-banner-action" method="post" action="{{ url_for('refresh_plan', issue_id=issue.id) }}">
+            {{ ui.csrf() }}
+            <button type="submit" class="sf-btn sf-btn-secondary sf-btn-sm">{{ ui.icon("rework", 14) }}<span>Refresh plan</span></button>
         </form>
     </div>
     {% endif %}
 
-    {% if 'approve' in actions %}
-    <form method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <button type="submit">Approve Plan</button>
-    </form>
-    <hr>
-    {% endif %}
-    {% if 'rework' in actions %}
-    <form method="post" action="{{ url_for('rework_plan', issue_id=issue.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <input name="feedback" placeholder="Rework this plan" required />
-        <button type="submit">Rework Plan</button>
-    </form>
+    {% if 'approve' in actions or 'rework' in actions %}
+    <div class="sf-decide sf-decision" data-decision>
+        <div class="sf-decision-copy" data-idle>
+            <strong>Review the plan</strong>
+            <span>Approving starts implementation{% if linear_writeback and flow.linear == 'todo' %} and moves the issue to {{ flow.bands[1].label }} in Linear{% endif %}. Rework sends your notes back to the agent for a new plan.</span>
+        </div>
+        <div class="sf-decision-actions" data-idle>
+            {% if 'rework' in actions %}
+            <button type="button" class="sf-btn sf-btn-secondary" data-open-rework>{{ ui.icon("rework") }}<span>Request rework</span><kbd class="sf-kbd">R</kbd></button>
+            {% endif %}
+            {% if 'approve' in actions %}
+            <form method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}" data-approve>
+                {{ ui.csrf() }}
+                <button type="submit" class="sf-btn sf-btn-accent">{{ ui.icon("check") }}<span>Approve plan</span><kbd class="sf-kbd">A</kbd></button>
+            </form>
+            {% endif %}
+        </div>
+        {% if 'rework' in actions %}
+        <form class="sf-rework-form" method="post" action="{{ url_for('rework_plan', issue_id=issue.id) }}" data-rework hidden>
+            <div class="sf-field">
+                <label class="sf-field-label" for="feedback">What should change in the plan?</label>
+                <div class="sf-input is-multiline"><textarea id="feedback" class="sf-input-control" name="feedback" rows="3" required
+                    placeholder="Say what's wrong and what you expect instead"></textarea></div>
+                <p class="sf-field-hint">The agent replans with your notes; the plan comes back here for review.</p>
+            </div>
+            {{ ui.csrf() }}
+            <div class="sf-decision-actions">
+                <button type="button" class="sf-btn sf-btn-ghost" data-cancel-rework>Cancel</button>
+                <button type="submit" class="sf-btn sf-btn-primary">Send for rework<kbd class="sf-kbd">Ctrl ↵</kbd></button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+    <script>
+        // A approves, R opens rework, Ctrl+Enter sends it, Esc closes it
+        (function () {
+            const bar = document.querySelector('[data-decision]');
+            const rework = bar.querySelector('[data-rework]');
+            const approve = bar.querySelector('[data-approve]');
+            const idle = [...bar.querySelectorAll('[data-idle]')];
+            function setRework(open) {
+                if (!rework) return;
+                rework.hidden = !open;
+                idle.forEach((el) => (el.hidden = open));
+                bar.classList.toggle('is-rework', open);
+                (open ? rework.querySelector('textarea') : bar.querySelector('[data-open-rework]')).focus();
+            }
+            bar.querySelector('[data-open-rework]')?.addEventListener('click', () => setRework(true));
+            bar.querySelector('[data-cancel-rework]')?.addEventListener('click', () => setRework(false));
+            rework?.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rework.requestSubmit(); }
+                if (e.key === 'Escape') setRework(false);
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.target.closest('input, textarea, select')) return;
+                if (e.key === 'a' && approve && rework?.hidden !== false) approve.requestSubmit();
+                if (e.key === 'r' && rework) { e.preventDefault(); setRework(true); }
+            });
+        })();
+    </script>
     {% endif %}
 
-    {% if 'retry' in actions %}
-    <form method="post" action="{{ url_for('retry_triage', issue_id=issue.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <button type="submit">Retry triage</button>
-    </form>
-    {% endif %}
-
-    {% if 'publish' in actions %}
-    <form method="post" action="{{ url_for('open_pr', issue_id=issue.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <button type="submit">Open PR</button>
-        <small>Push the committed fix and open its PR, without running the agent again.</small>
-    </form>
-    {% endif %}
-
-    {% if 'release' in actions %}
-    <hr>
-    <form method="post" action="{{ url_for('release_issue', issue_id=issue.id) }}"
-          onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear and any PR are left as they are.');">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <button type="submit">Release</button>
-        <small>Give up on this issue and free its slot.</small>
-    </form>
+    {% if ('refresh' in actions and not dev_moved) or 'retry' in actions or 'publish' in actions or 'release' in actions %}
+    <section class="sf-section" aria-labelledby="actions-heading">
+        <div class="sf-section-head"><h2 id="actions-heading">Actions</h2></div>
+        <ul class="sf-panel sf-actions">
+            {% if 'refresh' in actions and not dev_moved %}
+            <li class="sf-action">
+                <form method="post" action="{{ url_for('refresh_plan', issue_id=issue.id) }}">
+                    {{ ui.csrf() }}
+                    <button type="submit" class="sf-btn sf-btn-secondary">{{ ui.icon("rework") }}<span>Refresh plan</span></button>
+                </form>
+                <p>Update the worktree to the latest {{ base_branch }} and have the planner check whether the plan still holds.</p>
+            </li>
+            {% endif %}
+            {% if 'retry' in actions %}
+            <li class="sf-action">
+                <form method="post" action="{{ url_for('retry_triage', issue_id=issue.id) }}">
+                    {{ ui.csrf() }}
+                    <button type="submit" class="sf-btn sf-btn-primary">{{ ui.icon("rework") }}<span>Retry triage</span></button>
+                </form>
+                <p>Put the issue back on the queue; the agent gathers context and plans again.</p>
+            </li>
+            {% endif %}
+            {% if 'publish' in actions %}
+            <li class="sf-action">
+                <form method="post" action="{{ url_for('open_pr', issue_id=issue.id) }}">
+                    {{ ui.csrf() }}
+                    <button type="submit" class="sf-btn sf-btn-primary">{{ ui.icon("pull-request") }}<span>Open PR</span></button>
+                </form>
+                <p>Push the committed fix and open its PR, without running the agent again.</p>
+            </li>
+            {% endif %}
+            {% if 'release' in actions %}
+            <li class="sf-action">
+                <form method="post" action="{{ url_for('release_issue', issue_id=issue.id) }}"
+                      onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear and any PR are left as they are.');">
+                    {{ ui.csrf() }}
+                    <button type="submit" class="sf-btn sf-btn-danger">{{ ui.icon("x") }}<span>Release</span></button>
+                </form>
+                <p>Give up on this issue and free its slot.</p>
+            </li>
+            {% endif %}
+        </ul>
+    </section>
     {% endif %}
 
     {% if runs %}
-    <h2>Agent runs</h2>
-    <table>
-        <tr><th>Phase</th><th>Started</th><th>Outcome</th><th>Turns</th><th>Cost</th></tr>
-        {% for run in runs %}
-        <tr>
-            <td>{{ run.phase }}</td>
-            <td>{{ run.started_at }}</td>
-            <td>{% if run.error %}{{ run.error }}{% elif run.ended_at %}{{ run.subtype }}{% else %}running{% endif %}</td>
-            <td>{{ run.num_turns if run.num_turns is not none else '' }}</td>
-            <td>{{ '$%.2f'|format(run.cost_usd) if run.cost_usd is not none else '' }}</td>
-        </tr>
-        {% endfor %}
-    </table>
+    <section class="sf-section" aria-labelledby="runs-heading">
+        <div class="sf-section-head"><h2 id="runs-heading">Agent runs</h2></div>
+        <div class="sf-panel sf-table-wrap" style="overflow: hidden">
+            <table class="sf-table">
+                <thead><tr><th scope="col">Phase</th><th scope="col">Started</th><th scope="col">Outcome</th><th scope="col" class="is-num">Turns</th><th scope="col" class="is-num">Cost</th></tr></thead>
+                <tbody>
+                {% for run in runs %}
+                <tr>
+                    <td>{{ run.phase }}</td>
+                    <td class="sf-mono sf-muted" title="{{ run.started_at }}">{{ run.started_at | ago }} ago</td>
+                    <td>
+                        {% if run.error %}{{ ui.status("attn", "failed") }}<span class="sf-table-error">{{ run.error }}</span>
+                        {% elif run.ended_at %}{{ ui.status("attn" if run.is_error else "done", run.subtype or "finished") }}
+                        {% else %}{{ ui.status("run", "running") }}{% endif %}
+                    </td>
+                    <td class="sf-mono is-num">{{ run.num_turns if run.num_turns is not none else '' }}</td>
+                    <td class="sf-mono is-num">{{ '$%.2f'|format(run.cost_usd) if run.cost_usd is not none else '' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
     {% endif %}
 
-    <h2>History</h2>
-    <ul>
-        {% for event in events %}
-        <li>{{ event.at }} · {{ event.from_status or 'new' }} → {{ event.to_status }}{% if event.actor %} by {{ event.actor }}{% endif %}{% if event.detail %}: {{ event.detail }}{% endif %}</li>
-        {% endfor %}
-    </ul>
-
+    <section class="sf-section" aria-labelledby="history-heading">
+        <div class="sf-section-head"><h2 id="history-heading">History</h2></div>
+        <div class="sf-panel">
+            <ol class="sf-timeline">
+                {% for event in events | reverse %}
+                {% set ekind, elabel = look(event.to_status) %}
+                {% set changed = event.from_status != event.to_status %}
+                {% if changed or event.detail %}
+                <li class="sf-event sf-k-{{ ekind if changed else 'queued' }}">
+                    <span class="sf-event-ago sf-mono" title="{{ event.at }}">{{ event.at | ago }}</span>
+                    <span class="sf-event-mark">{{ ui.status_icon(ekind if changed else 'queued', 12) }}</span>
+                    <span class="sf-event-text">
+                        {% if event.actor %}<span class="sf-event-actor">{{ event.actor }}</span>{% endif %}
+                        {% if changed %}<span style="color: var(--ink)">{{ look(event.from_status)[1] if event.from_status else 'new' }} → {{ elabel }}</span>{% endif %}{% if changed and event.detail %}: {% endif %}{{ event.detail or '' }}
+                    </span>
+                </li>
+                {% endif %}
+                {% endfor %}
+            </ol>
+        </div>
+    </section>
 {% endblock %}

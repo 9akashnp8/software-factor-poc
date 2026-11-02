@@ -17,6 +17,8 @@ STATUS_LOOK = {
     store.PLANNING: ("run", "planning", "run"),
     store.REWORK_QUEUED: ("run", "rework queued", "run"),
     store.REWORKING: ("run", "reworking plan", "run"),
+    store.REFRESH_QUEUED: ("run", "refresh queued", "run"),
+    store.REFRESHING: ("run", "refreshing plan", "run"),
     store.IMPLEMENT_QUEUED: ("run", "approved, queued", "run"),
     store.IMPLEMENTING: ("run", "implementing", "run"),
     store.REVIEWING: ("run", "reviewing", "run"),
@@ -41,6 +43,7 @@ AGENT_RUNNING = frozenset(
         store.GATHERING_CONTEXT,
         store.PLANNING,
         store.REWORKING,
+        store.REFRESHING,
         store.IMPLEMENTING,
         store.REVIEWING,
         store.FIXING,
@@ -65,6 +68,52 @@ GROUPS = [
     ("done", "Done", "Deployed or released", 0),
 ]
 KIND_OF_GROUP = {"you": "attn", "run": "run", "queued": "queued", "ship": "ship", "done": "done"}
+
+# The path every issue takes, from QA's report to QA's review: (key, label, who acts, Linear state
+# once the stage is reached). The issue page draws it with the stage waiting on its actor current.
+STAGES = [
+    ("logged", "Logged", "QA", "todo"),
+    ("analyzing", "Analyzing", "Agent", "todo"),
+    ("plan", "Plan review", "You", "todo"),
+    ("implementing", "Implementing", "Agent", "in-progress"),
+    ("pr", "Draft PR", "Agent", "in-progress"),
+    ("merged", "Merged", "Reviewer", "pending-deployment"),
+    ("deployed", "Deployed", "Pipeline", "in-review"),
+    ("qa", "QA review", "QA", "in-review"),
+]
+ACTOR_KIND = {"You": "review", "Reviewer": "review", "Agent": "run", "Pipeline": "ship", "QA": "ship"}
+LINEAR_STATES = {
+    "todo": config.LINEAR_TODO_STATE,
+    "in-progress": config.LINEAR_IN_PROGRESS_STATE,
+    "pending-deployment": config.LINEAR_PENDING_DEPLOY_STATE,
+    "in-review": config.LINEAR_MERGED_STATE,
+}
+# Each status: the stage waiting on someone, and the state the worker has set in Linear by then
+FLOW = {
+    store.QUEUED: ("analyzing", "todo"),
+    store.GATHERING_CONTEXT: ("analyzing", "todo"),
+    store.PLANNING: ("analyzing", "todo"),
+    store.PLAN_READY: ("plan", "todo"),
+    store.REWORK_QUEUED: ("analyzing", "todo"),
+    store.REWORKING: ("analyzing", "todo"),
+    store.REFRESH_QUEUED: ("analyzing", "todo"),
+    store.REFRESHING: ("analyzing", "todo"),
+    store.IMPLEMENT_QUEUED: ("implementing", "todo"),
+    store.IMPLEMENTING: ("implementing", "in-progress"),
+    store.REVIEWING: ("implementing", "in-progress"),
+    store.FIXING: ("implementing", "in-progress"),
+    store.READY_FOR_PR: ("pr", "in-progress"),
+    store.WORK_COMPLETED: ("pr", "in-progress"),
+    store.PUBLISH_QUEUED: ("pr", "in-progress"),
+    store.UPDATE_QUEUED: ("pr", "in-progress"),
+    store.UPDATING: ("pr", "in-progress"),
+    store.PR_OPENED: ("merged", "in-progress"),
+    store.DEPLOY_PENDING: ("deployed", "pending-deployment"),
+    # Without a deploy pipeline a merge goes straight to QA
+    store.MERGED: ("qa", "in-review"),
+    store.DEPLOYED: ("qa", "in-review"),
+}
+STOPPED = frozenset({store.RELEASE_QUEUED, store.RELEASING, store.RELEASED})
 ACTIVITY_LIMIT = 12
 # Build errors run to hundreds of characters; the issue page has the rest
 ACTIVITY_TEXT_MAX = 80
@@ -99,6 +148,44 @@ def ago(iso: str, now: datetime | None = None) -> str:
     if minutes < 60 * 24:
         return f"{minutes // 60}h{minutes % 60:02d}"
     return f"{minutes // (60 * 24)}d"
+
+
+def look(status: str) -> tuple[str, str]:
+    """(kind, label) a status is drawn with."""
+    kind, label, _ = STATUS_LOOK.get(status, ("queued", status, "queued"))
+    return kind, label
+
+
+def flow(issue: sqlite3.Row, events: list[sqlite3.Row]) -> dict:
+    """The issue's place in STAGES and the Linear state that goes with it, for the issue page.
+
+    A blocked or released issue keeps the place of the last status before it.
+    """
+    status = issue["status"]
+    if status not in FLOW:
+        status = next((e["to_status"] for e in reversed(events) if e["to_status"] in FLOW), store.QUEUED)
+    at_key, linear = FLOW[status]
+    at = next(i for i, s in enumerate(STAGES) if s[0] == at_key)
+    blocked = issue["status"] == store.NEEDS_ATTENTION
+    stages = []
+    for i, (key, label, actor, _) in enumerate(STAGES):
+        state = "past" if i < at else "future" if i > at else "blocked" if blocked else "current"
+        kind = {"past": "done", "future": "queued", "blocked": "attn"}.get(state, ACTOR_KIND[actor])
+        stages.append({"key": key, "label": label, "actor": "Blocked" if state == "blocked" else actor, "state": state, "kind": kind})
+    bands = []
+    for _, _, _, state in STAGES:
+        if bands and bands[-1]["state"] == state:
+            bands[-1]["span"] += 1
+        else:
+            bands.append({"state": state, "label": LINEAR_STATES[state], "span": 1, "current": state == linear})
+    return {
+        "stages": stages,
+        "bands": bands,
+        "linear": linear,
+        "linear_label": LINEAR_STATES[linear],
+        "blocked": blocked,
+        "stopped": issue["status"] in STOPPED,
+    }
 
 
 def _first_line(text: str | None) -> str:

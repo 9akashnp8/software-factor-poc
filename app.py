@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime
 
@@ -9,7 +10,8 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from software_factory import home, dev_changes, store
+from software_factory import config, dev_changes, home, store
+from software_factory.environment import branch_name
 from software_factory.overlap import overlaps
 
 load_dotenv()
@@ -18,6 +20,9 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY")
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 CSRFProtect(app)
+# Pages draw statuses and ages the way the home page does
+app.add_template_filter(home.ago, "ago")
+app.add_template_global(home.look, "look")
 
 
 def _load_users(spec: str) -> dict[str, str]:
@@ -87,6 +92,8 @@ def issue_home():
         groups=home.build_groups(issues),
         load=home.load(issues),
         activity=home.activity(),
+        todo_state=config.LINEAR_TODO_STATE,
+        bug_label=config.LINEAR_BUG_LABEL,
     )
 
 @app.route("/issue/<issue_id>/plan")
@@ -94,6 +101,7 @@ def issue_detail(issue_id):
     issue = _issue_or_404(issue_id)
     plan = _read(issue_id, "plan.md")
     actions = store.allowed_actions(issue)
+    events = store.events(issue_id)
 
     return render_template(
         "issue_detail.html",
@@ -104,8 +112,36 @@ def issue_detail(issue_id):
         overlaps=overlaps(issue) if "approve" in actions else [],
         dev_moved=dev_changes.summary(issue) if "refresh" in actions else None,
         runs=store.runs(issue_id),
-        events=store.events(issue_id),
+        events=events,
+        flow=home.flow(issue, events),
+        pr=_pull_request(issue),
+        linear_writeback=config.LINEAR_WRITEBACK,
+        base_branch=config.BASE_BRANCH,
     )
+
+
+MERGED_STATUSES = frozenset({store.MERGED, store.DEPLOY_PENDING, store.DEPLOYED})
+
+
+def _pull_request(issue) -> dict | None:
+    """The PR card: what the worker opened, with the root cause and fix it reported."""
+    if not issue["pr_url"]:
+        return None
+    report = _read(issue["id"], "report.md")
+    summary = _read(issue["id"], "qa.json")
+    qa = json.loads(summary) if summary else {}
+    return {
+        "url": issue["pr_url"],
+        "number": issue["pr_id"],
+        "title": f"{issue['identifier']}: {issue['title']}".rstrip(": "),
+        # The worker opens PRs as drafts; a person marks them ready and merges
+        "state": "merged" if issue["status"] in MERGED_STATUSES else "draft",
+        "branch": branch_name(issue["identifier"]),
+        "base": config.BASE_BRANCH,
+        "root_cause": qa.get("root_cause"),
+        "fix": qa.get("fix"),
+        "report": render_md(report) if report else None,
+    }
 
 
 @app.route("/issue/<issue_id>/issue_context")

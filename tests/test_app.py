@@ -95,7 +95,7 @@ def test_refresh_queues_the_plan_and_hides_approve(client, ws):
     client.post("/issue/issue-1/refresh-plan", headers=AUTH, data={"csrf_token": token})
     assert store.get_issue("issue-1")["status"] == store.REFRESH_QUEUED
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
-    assert "Approve Plan" not in page and "Refresh plan" not in page
+    assert "Approve plan" not in page and "Refresh plan" not in page
 
 
 def test_plan_page_says_when_dev_has_moved(client, ws, monkeypatch):
@@ -120,10 +120,10 @@ def test_second_action_after_queueing_is_refused(client, ws):
 
 
 def test_buttons_follow_status(client, ws):
-    assert "Approve Plan" in client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Approve plan" in client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
     store.transition("issue-1", store.PR_OPENED)
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
-    assert "Approve Plan" not in page and "Rework Plan" not in page
+    assert "Approve plan" not in page and "Request rework" not in page
 
 
 def test_issue_without_plan_renders(client):
@@ -131,13 +131,13 @@ def test_issue_without_plan_renders(client):
     response = client.get("/issue/issue-1/plan", headers=AUTH)
     assert response.status_code == 200
     page = response.get_data(as_text=True)
-    assert "No plan yet" in page and "Approve Plan" not in page
+    assert "No plan yet" in page and "Approve plan" not in page
 
 
 def test_needs_attention_shows_reason(client, ws):
     store.transition("issue-1", store.NEEDS_ATTENTION, reason="The implement run didn't finish (error_max_turns)")
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
-    assert "error_max_turns" in page and "Approve Plan" in page
+    assert "error_max_turns" in page and "Approve plan" in page
 
 
 def test_unknown_issue_is_404(client):
@@ -148,7 +148,7 @@ def test_unknown_issue_is_404(client):
 def test_retry_requeues_an_issue_that_failed_before_planning(client):
     seed_issue(store.NEEDS_ATTENTION)
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
-    assert "Retry triage" in page and "Approve Plan" not in page
+    assert "Retry triage" in page and "Approve plan" not in page
     client.post("/issue/issue-1/retry", headers=AUTH, data={"csrf_token": csrf_token(client)})
     assert store.get_issue("issue-1")["status"] == store.QUEUED
 
@@ -188,8 +188,9 @@ def test_plans_render_as_commonmark():
     assert "<table>" in html and "<td>1</td>" in html
 
 
-def test_card_styling_is_scoped_to_the_issue_list(client, ws):
+def test_stylesheet_leaves_plan_lists_alone(client, ws):
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
-    assert ".issue-list li {" in page
-    # A bare li rule would turn every plan bullet into flex columns
-    assert "\n      li {" not in page
+    assert "/static/factory.css" in page
+    css = client.get("/static/factory.css", headers=AUTH).get_data(as_text=True)
+    # A bare li rule would restyle every plan bullet
+    assert not re.search(r"(^|[},]\s*)li\b[^{]*\{", css, re.M)
