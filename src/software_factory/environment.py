@@ -60,6 +60,12 @@ def _git(*args: str):
     subprocess.run(["git", "-C", str(config.TARGET_REPO), *args], check=True, capture_output=True, text=True)
 
 
+def fetch_base():
+    """Fetch origin's base branch into the target repo; its worktrees share the ref."""
+    with _worktree_lock:
+        _git("fetch", "origin", config.BASE_BRANCH)
+
+
 def provision(worktree: Path, env: dict[str, str]):
     """Create the slot's database with the target repo's own provisioning script."""
     run_env = {**os.environ, **env}

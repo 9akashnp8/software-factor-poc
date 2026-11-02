@@ -3,8 +3,8 @@
 Two processes share `bug_workspace/factory.db`:
 
 - **The worker** (`uv run software-factory`) is the only process that runs agents.
-- **The web app** (`uv run flask run`) is where you review plans. Approve and rework only
-  put the issue back on the worker's queue.
+- **The web app** (`uv run flask run`) is where you review plans. Approve, rework and
+  refresh only put the issue back on the worker's queue.
 
 `uv run software-factory ingest` queues new Todo bugs once and exits, without running
 anything. Use it to check what the worker would pick up.
@@ -15,7 +15,7 @@ Every few seconds it starts queued work, up to `SF_MAX_CONCURRENT_RUNS` (2) at o
 Work a person is waiting on goes first:
 
 1. Approved plans, to implement.
-2. Plans sent back for rework.
+2. Plans sent back for rework, then plans you asked to refresh.
 3. Opened PRs that need an update (see below), and issues you released.
 4. New bugs to triage, oldest first. A new bug also needs a free slot, and waits while
    `SF_MAX_PLANS_IN_REVIEW` (3) plans are being written, reworked or waiting for your review.
@@ -28,6 +28,7 @@ it checks the PRs it opened.
 queued → gathering-context → gathered-context (planning) → plan-generated-for-review
   approve → plan-approved-queued → plan-approved-agent-working → agent-work-completed → pr-opened
   rework  → plan-rework-queued → plan-rework-requested-agent-planning → plan-generated-for-review
+  refresh → plan-refresh-queued → plan-refresh-agent-planning → plan-generated-for-review
 pr-opened → merged-awaiting-deploy → deployed                         (merged, then a deploy succeeds)
 pr-opened → pr-update-queued → pr-updating-agent-working → pr-opened   (conflicts, failed build)
 needs-attention → pr-open-queued → agent-work-completed → pr-opened    (Open PR)
@@ -39,6 +40,26 @@ anything → needs-attention (the reason is on the issue page)
 Linear moves to In Progress when triage starts, to Pending Deployment when the PR merges,
 and to In Review once a deploy ships the fix, with a comment for QA (below).
 `SF_LINEAR_WRITEBACK=0` turns all of this off.
+
+## Refreshing a plan
+
+A plan is written on the `dev` its worktree was created from. While it waits for review,
+other PRs merge. The plan page says how many, naming the factory fixes among them: "3 new
+merges to dev, including BEI-20 and BEI-25 since this plan was written". The count uses
+`origin/dev` as the worker last fetched it, every `SF_MERGE_POLL_SECONDS`.
+
+**Refresh plan** fast-forwards the worktree to the latest `dev` and resumes the planning
+session. The prompt lists each merge with its files, and the root cause and fix for factory
+fixes. The planner either revises the plan, which starts with a "Revised after dev moved"
+note, or replies why it still holds. Either way the issue comes back to
+`plan-generated-for-review`, and its history says which. Approve and Rework are hidden while
+it runs.
+
+It runs no agent when `dev` hasn't moved since the plan. It refuses, and leaves the worktree
+alone, when the branch already has commits or the worktree has uncommitted files. If the
+run doesn't finish, the plan is unchanged and the page still counts the merges, so you can
+refresh again. Nothing refreshes on its own, and nothing fast-forwards once a plan is
+approved: a later conflict or failed build goes back to the agent as a PR update.
 
 ## Slots
 

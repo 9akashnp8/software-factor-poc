@@ -102,6 +102,18 @@
     </div>
     {% endif %}
 
+    {% if 'refresh' in actions and dev_moved %}
+    <div class="sf-banner sf-banner-warn" style="margin-top: 16px">
+        {{ ui.icon("branch") }}
+        <div class="sf-banner-body"><p><strong>{{ dev_moved }}</strong> since this plan was written.
+            Refreshing updates the worktree to the latest {{ base_branch }} and has the planner check whether the plan still holds.</p></div>
+        <form class="sf-banner-action" method="post" action="{{ url_for('refresh_plan', issue_id=issue.id) }}">
+            {{ ui.csrf() }}
+            <button type="submit" class="sf-btn sf-btn-secondary sf-btn-sm">{{ ui.icon("rework", 14) }}<span>Refresh plan</span></button>
+        </form>
+    </div>
+    {% endif %}
+
     {% if 'approve' in actions or 'rework' in actions %}
     <div class="sf-decide sf-decision" data-decision>
         <div class="sf-decision-copy" data-idle>
@@ -164,10 +176,19 @@
     </script>
     {% endif %}
 
-    {% if 'retry' in actions or 'publish' in actions or 'release' in actions %}
+    {% if ('refresh' in actions and not dev_moved) or 'retry' in actions or 'publish' in actions or 'release' in actions %}
     <section class="sf-section" aria-labelledby="actions-heading">
         <div class="sf-section-head"><h2 id="actions-heading">Actions</h2></div>
         <ul class="sf-panel sf-actions">
+            {% if 'refresh' in actions and not dev_moved %}
+            <li class="sf-action">
+                <form method="post" action="{{ url_for('refresh_plan', issue_id=issue.id) }}">
+                    {{ ui.csrf() }}
+                    <button type="submit" class="sf-btn sf-btn-secondary">{{ ui.icon("rework") }}<span>Refresh plan</span></button>
+                </form>
+                <p>Update the worktree to the latest {{ base_branch }} and have the planner check whether the plan still holds.</p>
+            </li>
+            {% endif %}
             {% if 'retry' in actions %}
             <li class="sf-action">
                 <form method="post" action="{{ url_for('retry_triage', issue_id=issue.id) }}">

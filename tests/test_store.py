@@ -52,9 +52,20 @@ def test_allowed_actions_need_a_plan_and_session():
     ws = seed_issue(store.PLAN_READY)
     assert store.allowed_actions(store.get_issue("issue-1")) == ["release"]
     (ws / "plan.md").write_text("# Plan")
-    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "release"]
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "refresh", "release"]
     store.transition("issue-1", store.PR_OPENED)
     assert store.allowed_actions(store.get_issue("issue-1")) == []
+
+
+def test_refresh_is_claimed_after_rework_and_requeued_if_cut_off():
+    seed_issue(store.PLAN_READY)
+    seed_issue(store.REWORK_QUEUED, issue_id="r", identifier="BEI-2", slot=2)
+    assert store.transition("issue-1", store.REFRESH_QUEUED, expected=store.ACTIONS["refresh"])
+    assert store.claim_next() == ("r", "rework")
+    assert store.claim_next() == ("issue-1", "refresh")
+    assert store.get_issue("issue-1")["status"] == store.REFRESHING
+    assert sorted(store.requeue_orphans()) == ["issue-1", "r"]
+    assert store.get_issue("issue-1")["status"] == store.REFRESH_QUEUED
 
 
 def test_enqueue_new_skips_issues_seen_before():

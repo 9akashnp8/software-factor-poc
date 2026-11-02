@@ -12,7 +12,9 @@ PATH_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)+[\w-]+\.\w+")
 # Issues whose branch has commits to compare against
 WITH_COMMITS = frozenset({store.IMPLEMENTING, store.WORK_COMPLETED, store.PR_OPENED, store.UPDATE_QUEUED, store.UPDATING})
 # Issues with a plan but no commits yet
-WITH_PLAN_ONLY = frozenset({store.PLAN_READY, store.IMPLEMENT_QUEUED, store.REWORK_QUEUED, store.REWORKING})
+WITH_PLAN_ONLY = frozenset(
+    {store.PLAN_READY, store.IMPLEMENT_QUEUED, store.REWORK_QUEUED, store.REWORKING, store.REFRESH_QUEUED, store.REFRESHING}
+)
 
 
 def mentioned_paths(text: str) -> set[str]:
