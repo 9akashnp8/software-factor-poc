@@ -34,6 +34,9 @@ REWORKING = "plan-rework-requested-agent-planning"
 REFRESH_QUEUED = "plan-refresh-queued"
 REFRESHING = "plan-refresh-agent-planning"
 REVIEWING = "reviewing"
+# The factory checks the implementer's verification before the PR; a failed check goes
+# back to the implementer once, in this status too
+VERIFYING = "verifying-fix"
 FIXING = "fixing-review-findings"
 READY_FOR_PR = "ready-for-pr"
 WORK_COMPLETED = "agent-work-completed"
@@ -90,6 +93,7 @@ REQUEUE_TO = {
     PLANNING: QUEUED,
     IMPLEMENTING: IMPLEMENT_QUEUED,
     REVIEWING: IMPLEMENT_QUEUED,
+    VERIFYING: IMPLEMENT_QUEUED,
     FIXING: IMPLEMENT_QUEUED,
     READY_FOR_PR: IMPLEMENT_QUEUED,
     WORK_COMPLETED: PUBLISH_QUEUED,
@@ -127,6 +131,8 @@ CREATE TABLE IF NOT EXISTS issues (
     merge_commit TEXT,
     deploy_build_seen INTEGER,
     plan_base TEXT,
+    reproduction TEXT,
+    browser_check INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -177,6 +183,10 @@ _ADDED_COLUMNS = {
         "deploy_build_seen": "INTEGER",
         # The dev commit the current plan was written or last re-checked against
         "plan_base": "TEXT",
+        # The planner's reproduction status (reproduction.STATUSES), for the page and metrics
+        "reproduction": "TEXT",
+        # Set at approval: the implementer must check the fix in the browser
+        "browser_check": "INTEGER NOT NULL DEFAULT 0",
     },
     "runs": {"rate_limited": "INTEGER NOT NULL DEFAULT 0"},
 }
@@ -185,7 +195,7 @@ ISSUE_FIELDS = {
     "identifier", "title", "url", "session_id", "pr_url", "pr_id",
     "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
     "pr_conflict_key", "pr_build_id", "merged_at", "merge_commit", "deploy_build_seen",
-    "plan_base",
+    "plan_base", "reproduction", "browser_check",
 }
 
 
@@ -415,7 +425,8 @@ def reopen(issue_id: str) -> sqlite3.Row | None:
         conn.execute(
             """UPDATE issues SET status = ?, session_id = NULL, pr_url = NULL, pr_id = NULL,
                    pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
-                   pending_feedback = NULL, needs_attention_reason = NULL, slot = NULL, updated_at = ?
+                   pending_feedback = NULL, needs_attention_reason = NULL, slot = NULL, reproduction = NULL,
+                   browser_check = 0, updated_at = ?
                WHERE id = ?""",
             (QUEUED, _now(), issue_id),
         )
@@ -455,7 +466,7 @@ def restart(issue_id: str, actor: str) -> bool:
             """UPDATE issues SET status = ?, session_id = NULL, pr_url = NULL, pr_id = NULL,
                    pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
                    pending_feedback = NULL, needs_attention_reason = NULL, plan_reviewed_by = NULL,
-                   slot = NULL, updated_at = ?
+                   slot = NULL, reproduction = NULL, browser_check = 0, updated_at = ?
                WHERE id = ?""",
             (QUEUED, _now(), issue_id),
         )
@@ -631,6 +642,9 @@ def allowed_actions(issue: sqlite3.Row) -> list[str]:
     actions = []
     if has_plan:
         actions += [a for a in ("approve", "rework", "refresh") if issue["status"] in ACTIONS[a]]
+        # A bug that didn't reproduce has findings and a question for QA, not a fix to approve
+        if issue["reproduction"] == "not_reproduced" and "approve" in actions:
+            actions.remove("approve")
     elif issue["status"] in ACTIONS["retry"]:
         actions.append("retry")
     # A successful implementation wrote its report; publishing reuses that commit

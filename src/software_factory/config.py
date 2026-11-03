@@ -57,6 +57,20 @@ MAX_UPDATE_ROUNDS = _int("SF_MAX_UPDATE_ROUNDS", 3)
 # Rate-limited runs go back on the queue this many times before needing attention
 MAX_ATTEMPTS = _int("SF_MAX_ATTEMPTS", 3)
 
+# The browser agents drive to reproduce and check bugs in the web app, run with npx.
+# Empty turns the browser off.
+PLAYWRIGHT_MCP = os.getenv("SF_PLAYWRIGHT_MCP", "@playwright/mcp@0.0.83")
+# How long the factory's own run of the reproducing test may take before the PR
+VERIFY_TIMEOUT_SECONDS = _int("SF_VERIFY_TIMEOUT_SECONDS", 900)
+
+# Loki holding the target's api logs, for the agents' context; empty turns logs off. The
+# selector picks the api's stream in your Loki's labels. Credentials: LOKI_TOKEN (bearer),
+# or LOKI_USER and LOKI_PASSWORD (basic); LOKI_ORG_ID for a multi-tenant Loki.
+LOKI_URL = os.getenv("SF_LOKI_URL", "").rstrip("/")
+LOKI_SELECTOR = os.getenv("SF_LOKI_SELECTOR", '{service="api"}')
+# How far before QA's report triage looks for errors, for bugs without a conversation
+LOKI_WINDOW_MINUTES = _int("SF_LOKI_WINDOW_MINUTES", 30)
+
 # The web app's address, for the plan link in PR descriptions; no link when unset
 PUBLIC_URL = os.getenv("SF_PUBLIC_URL", "").rstrip("/")
 
@@ -83,4 +97,8 @@ FACTORY_SECRETS = (
     "AZURE_DEVOPS_PAT",
     "SF_USERS",
     "FLASK_SECRET_KEY",
+    "LOKI_TOKEN",
+    "LOKI_USER",
+    "LOKI_PASSWORD",
+    "LOKI_ORG_ID",
 )

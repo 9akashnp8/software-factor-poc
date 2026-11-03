@@ -61,6 +61,7 @@
             <dl class="sf-pr-body">
                 {% if pr.root_cause %}<dt>Root cause</dt><dd>{{ pr.root_cause }}</dd>{% endif %}
                 {% if pr.fix %}<dt>Fix</dt><dd>{{ pr.fix }}</dd>{% endif %}
+                {% if pr.checked %}<dt>Checked</dt><dd>{{ pr.checked }}</dd>{% endif %}
             </dl>
             {% endif %}
             {% if pr.report %}
@@ -73,9 +74,64 @@
     </section>
     {% endif %}
 
+    {% if verification or screenshots %}
+    <section class="sf-section" aria-labelledby="verification-heading">
+        <div class="sf-section-head"><h2 id="verification-heading">Verification</h2></div>
+        <div class="sf-panel">
+            {% if verification %}<article class="sf-prose">{{ verification }}</article>{% endif %}
+            {% if screenshots %}
+            <div class="sf-shots">
+                {% for name in screenshots %}
+                <a href="{{ url_for('evidence_file', issue_id=issue.id, name=name) }}" rel="noopener noreferrer"><img src="{{ url_for('evidence_file', issue_id=issue.id, name=name) }}" alt="Screenshot {{ name }}" loading="lazy"></a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+
+    {% if repro %}
+    {% set rkind, rlabel = repro_look %}
+    <section class="sf-section" aria-labelledby="repro-heading">
+        <div class="sf-section-head"><h2 id="repro-heading">Reproduction</h2></div>
+        <div class="sf-panel">
+            <dl class="sf-pr-body sf-facts">
+                <dt>Outcome</dt><dd>{{ ui.status(rkind, rlabel, tinted=true) }}{% if repro.method %} <span class="sf-muted">by {{ repro.method }}</span>{% endif %}</dd>
+                {% if repro.steps %}<dt>Steps</dt><dd><ol>{% for step in repro.steps %}<li>{{ step }}</li>{% endfor %}</ol></dd>{% endif %}
+                {% if repro.evidence %}<dt>Evidence</dt><dd><div class="sf-raw">{{ repro.evidence }}</div></dd>{% endif %}
+                {% if repro.reason %}<dt>Why not</dt><dd>{{ repro.reason }}</dd>{% endif %}
+            </dl>
+        </div>
+    </section>
+    {% endif %}
+
+    {% if replay_missing %}
+    <div class="sf-banner sf-banner-warn" style="margin-top: 16px">
+        {{ ui.icon("alert") }}
+        <div class="sf-banner-body"><p><strong>Not replayed.</strong>This is a chat bug, but the planner didn't reproduce it by replaying the conversation, so the plan rests on weaker evidence.</p></div>
+    </div>
+    {% endif %}
+
+    {% if repro and repro.status == 'not_reproduced' and 'rework' in actions %}
+    <section class="sf-section" aria-labelledby="qa-heading">
+        <div class="sf-section-head"><h2 id="qa-heading">Question for QA</h2></div>
+        <form class="sf-panel sf-qa-question" method="post" action="{{ url_for('post_qa_question', issue_id=issue.id) }}">
+            {{ ui.csrf() }}
+            <div class="sf-field">
+                <label class="sf-field-label" for="question">The planner couldn't reproduce the bug. Edit its question, then post it on the Linear issue.</label>
+                <div class="sf-input is-multiline"><textarea id="question" class="sf-input-control" name="question" rows="4" required>{{ repro.qa_question }}</textarea></div>
+                <p class="sf-field-hint">{% if linear_writeback %}Posted as a comment, as the factory's Linear user. When QA answers, send the answer as rework.{% else %}Posting is off while SF_LINEAR_WRITEBACK=0.{% endif %}</p>
+            </div>
+            <div class="sf-decision-actions">
+                <button type="submit" class="sf-btn sf-btn-primary"{% if not linear_writeback %} disabled{% endif %}>{{ ui.icon("external", 14) }}<span>Post to Linear</span></button>
+            </div>
+        </form>
+    </section>
+    {% endif %}
+
     <section class="sf-section" aria-labelledby="plan-heading">
         <div class="sf-section-head">
-            <h2 id="plan-heading">Plan</h2>
+            <h2 id="plan-heading">{% if repro and repro.status == 'not_reproduced' %}Findings{% else %}Plan{% endif %}</h2>
             <a href="{{ url_for('issue_context', issue_id=issue.id) }}">Issue context{{ ui.icon("arrow-right", 14) }}</a>
         </div>
         <div class="sf-panel">
@@ -117,16 +173,25 @@
     {% if 'approve' in actions or 'rework' in actions %}
     <div class="sf-decide sf-decision" data-decision>
         <div class="sf-decision-copy" data-idle>
+            {% if 'approve' in actions %}
             <strong>Review the plan</strong>
-            <span>Approving starts implementation{% if linear_writeback and flow.linear == 'todo' %} and moves the issue to {{ flow.bands[1].label }} in Linear{% endif %}. Rework sends your notes back to the agent for a new plan.</span>
+            <span>Approving starts implementation. Rework sends your notes back to the agent for a new plan.</span>
+            {% else %}
+            <strong>Not reproduced</strong>
+            <span>There's no fix to approve until the bug reproduces. Send QA's answer, or your own pointers, as rework.</span>
+            {% endif %}
         </div>
         <div class="sf-decision-actions" data-idle>
             {% if 'rework' in actions %}
             <button type="button" class="sf-btn sf-btn-secondary" data-open-rework>{{ ui.icon("rework") }}<span>Request rework</span><kbd class="sf-kbd">R</kbd></button>
             {% endif %}
             {% if 'approve' in actions %}
-            <form method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}" data-approve>
+            <form class="sf-approve" method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}" data-approve>
                 {{ ui.csrf() }}
+                <label class="sf-check" title="The implementer must check the fix in the web app, and the PR waits until it passes">
+                    <input type="checkbox" name="browser_check" value="1"{% if issue.browser_check %} checked{% endif %}>
+                    <span>Require a browser check</span>
+                </label>
                 <button type="submit" class="sf-btn sf-btn-accent">{{ ui.icon("check") }}<span>Approve plan</span><kbd class="sf-kbd">A</kbd></button>
             </form>
             {% endif %}

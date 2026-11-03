@@ -341,7 +341,7 @@ def _collapse_history(turns: list[dict]) -> list[dict]:
             for node in turn["nodes"]
         ]
         collapsed.append({**turn, "nodes": nodes})
-        for role, text in (("user", turn["user_query"]), ("assistant", _final_answer(turn))):
+        for role, text in (("user", turn["user_query"]), ("assistant", final_answer(turn))):
             if isinstance(text, str):
                 earlier.setdefault((role, text.strip()), number)
     return collapsed
@@ -366,7 +366,34 @@ def _collapse_messages(messages: list[dict], earlier: dict[tuple[str, str], int]
     return [marker, *messages[len(turn_numbers):]]
 
 
-def _final_answer(turn: dict) -> str | None:
+def replay_input(conversation: dict) -> dict:
+    """What the replay tool needs from a cleaned conversation: each turn's question and answer.
+
+    Turns are numbered from 1, as in the rendered trace. A turn whose input isn't a question
+    (an approval or a form answered) has no user_query, since a replay can't send it. The
+    failing turn is a guess, the last one with issues or else the last one; the planner
+    picks the turn to replay.
+    """
+    turns = [
+        {
+            "turn": number,
+            "timestamp": turn["timestamp"],
+            "latency": turn["latency"],
+            "user_query": turn["user_query"] if isinstance(turn["user_query"], str) else None,
+            "answer": final_answer(turn),
+            "has_issues": bool(turn["issues"]),
+        }
+        for number, turn in enumerate(conversation["turns"], start=1)
+    ]
+    flagged = [t["turn"] for t in turns if t["has_issues"]]
+    return {
+        "conversation_id": conversation["session_id"],
+        "failing_turn": flagged[-1] if flagged else (turns[-1]["turn"] if turns else None),
+        "turns": turns,
+    }
+
+
+def final_answer(turn: dict) -> str | None:
     result = turn["result"]
     if isinstance(result, dict) and isinstance(result.get("answer"), str):
         return result["answer"]

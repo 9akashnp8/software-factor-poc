@@ -26,7 +26,7 @@ it checks the PRs it opened.
 
 ```
 queued → gathering-context → gathered-context (planning) → plan-generated-for-review
-  approve → plan-approved-queued → plan-approved-agent-working → agent-work-completed → pr-opened
+  approve → plan-approved-queued → plan-approved-agent-working → verifying-fix → agent-work-completed → pr-opened
   rework  → plan-rework-queued → plan-rework-requested-agent-planning → plan-generated-for-review
   refresh → plan-refresh-queued → plan-refresh-agent-planning → plan-generated-for-review
 pr-opened → merged-awaiting-deploy → deployed                         (merged, then a deploy succeeds)
@@ -40,6 +40,97 @@ anything → needs-attention (the reason is on the issue page)
 Linear moves to In Progress when triage starts, to Pending Deployment when the PR merges,
 and to In Review once a deploy ships the fix, with a comment for QA (below).
 `SF_LINEAR_WRITEBACK=0` turns all of this off.
+
+## Reproducing before planning
+
+The planner reproduces the bug on its worktree, which is the latest `dev`, before it plans
+a fix: a chat answer by replaying the conversation (below), anything else with a failing
+test, the web app in a headless browser, or a call to the api. It records the outcome in
+`reproduction.json` in the issue's workspace: `reproduced`, `not_reproduced` or
+`not_attempted`, with the method, steps, evidence and, when it couldn't try, why. The plan
+can't be presented until that file is valid.
+
+The plan page shows it in a Reproduction section. A chat bug that wasn't reproduced by a
+replay gets a "Not replayed" warning.
+
+A bug that **didn't reproduce** gets findings instead of a fix plan, and a draft question
+for QA. Approve is hidden. Edit the question and **Post to Linear** comments on the issue
+(nothing is posted on its own). When QA answers, send the answer as rework: the planner
+tries again and updates `reproduction.json`.
+
+### Replaying a chat turn
+
+For a `cpcgpt-chat` bug, triage writes `replay.json` (each turn's question and answer,
+redacted) next to `conversation.json`. Agents run
+
+```
+$SF_REPLAY --turn N --label before|after
+```
+
+It sends that turn's question with the history before it, trimmed as production trims it
+(12 rows, then 1500 tokens), through the target's evaluation runner, 3 times. The answers
+go to `replays/<label>-turn<N>.json`. It runs in the worktree's own environment, with the
+target's `PROMPT_OVERRIDE_DIR` pointed at the worktree's `prompt-changes/`, so a prompt fix
+is tried without touching Langfuse, and nothing is traced to Langfuse.
+
+Limits: ERP answers come from the target's fixtures with a made-up employee, so bugs that
+depend on one employee's real data won't reproduce; policy answers need the slot's
+database seeded (`just seed`); turns that answer an approval or a form can't be replayed.
+
+### The browser
+
+Planner and implementer get a headless Chrome through Playwright MCP
+(`SF_PLAYWRIGHT_MCP`, a pinned `@playwright/mcp`, run with `npx`). It needs Node and Google
+Chrome on the factory's machine; the first run downloads the package. Screenshots go to
+`evidence/` in the workspace. Agents sign in with the target's `AWP_TEST_*` test accounts,
+through the real identity provider. `SF_PLAYWRIGHT_MCP=` turns the browser off.
+
+## Verifying before the PR
+
+The implementer turns the reproduction into a failing test where one fits and commits it
+on its own (`test: reproduce BEI-12`), fixes the bug, then verifies: the test passes, the
+relevant suites pass, a chat bug replays correctly (`--label after`), and, when the bug
+shows in the web app, a browser check. **Require a browser check** on the approve button
+makes the browser check mandatory.
+
+The worker then checks what it reported, as `verifying-fix`:
+
+- it re-runs the reproducing test itself, in the worktree with the slot's environment;
+- a required browser check must have been done and passed;
+- a failed check goes back to the implementer once, with the failure;
+- still failing, or not verifiable at all (a service down, say), the issue needs
+  attention with the reason, and **Open PR** ships it anyway if you decide to.
+
+Servers the agent left running on the slot's ports are stopped afterwards, and again on
+teardown.
+
+The PR description starts with a before/after table (test, replay, browser), and the plan
+page shows it with the screenshots.
+
+## API logs
+
+With `SF_LOKI_URL` set, triage fetches the api's logs from Loki into `logs/` in the
+workspace: for a chat bug, the failing turn's requests (found through the conversation id)
+and the warnings and errors around it; for any other bug, the warnings and errors in the
+`SF_LOKI_WINDOW_MINUTES` before QA reported it. Agents search other windows with the
+factory's `query_logs` tool. It runs in the worker, so Loki's credentials (`LOKI_TOKEN`, or
+`LOKI_USER` and `LOKI_PASSWORD`) never reach an agent. Every line is scrubbed of emails,
+phone numbers and tokens. If Loki is down, triage goes on and the issue's history says so.
+
+`SF_LOKI_SELECTOR` picks the api's stream, in whatever labels your Loki gives the VM's
+compose logs. To check it by hand:
+
+```
+uv run software-factory logs BEI-12 --since 2026-11-02T09:00:00Z --errors-only
+```
+
+## Metrics
+
+`/metrics` shows, for the last 7, 30 or 90 days: how many plans were sent back, how many
+fixes failed verification, how many bugs came back from QA, how reproduction went, why
+issues needed attention, how long issues spent in each stage, and what the agent runs
+cost. If many fixes come back from QA after passing verification, a check against the
+deployed dev is worth adding.
 
 ## Refreshing a plan
 
@@ -102,10 +193,14 @@ Review:
 > **Root cause:** …
 >
 > **Fix:** …
+>
+> **Reproduced:** With an automated test, which failed before the fix.
+>
+> **Checked:** …
 
-The implementing agent writes the root cause and fix for QA when it finishes, in plain
-sentences without code, file names or user data; they're kept in the workspace's
-`qa.json`. Emails and phone numbers are scrubbed again before posting. Issues implemented
+The implementing agent writes the root cause, the fix and how it checked it for QA when it
+finishes, in plain sentences without code, file names or user data; they're kept in the
+workspace's `qa.json`. The Reproduced line comes from the planner's `reproduction.json`. Emails and phone numbers are scrubbed again before posting. Issues implemented
 before this existed get the first line only.
 
 With `SF_DEPLOY_PIPELINE_ID=0`, there's no Pending Deployment: the issue is marked

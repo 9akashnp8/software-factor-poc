@@ -17,52 +17,17 @@ the factory works today is in `docs/running.md` and `docs/agent-permissions.md`.
       that sends a fixed JWT, which looks like a real person's, instead of `token`. Worktrees
       don't have it, but it's a secret in the working tree and anything run from that
       checkout calls ERP as that person.
-
-## Planned next: reproduce and replay
-
-Plans are approved without evidence that the bug happens, and PRs don't show it's gone.
-
-- [ ] **Replay input:** at triage, write `replay.json` (the turns and the failing turn,
-      redacted) from `conversation.json`.
-- [ ] **Replay tool in the factory** (`replay_turn.py`), run with the worktree's environment
-      via `$SF_REPLAY --turn N --label before|after`:
-      - calls the target's `api.evals.runner.run_question` in-process (no auth needed; ERP
-        answers from fixtures);
-      - trims history the way production does;
-      - runs 3 times;
-      - records the results to the issue's workspace.
-- [ ] **Local prompt override:** the replay tool serves `prompt-changes/<name>.md` in place
-      of the Langfuse prompt, so prompt fixes are tested without saving anything in
-      Langfuse, where every new version goes live at once.
-- [ ] **Agent instructions:** reproduce on the latest dev before planning, replay after
-      implementing, and write prompt changes as full system messages in Langfuse template
-      syntax. The planner reports one of: reproduced (steps and failing output), not
-      reproduced (check recent merges for a fix before planning anything), or couldn't
-      attempt (and why).
-- [ ] **Failing test first** for bugs that aren't chat answers: the implementer writes the
-      test, records it failing, then fixes. Today it's told to "add or update a test where
-      one fits", and a test written after the fix may never have failed.
-- [ ] **Not reproduced → a question for QA, posted by a person.** The plan page shows the
-      planner's draft comment asking QA for detail, with a button to post it to Linear.
-      Nothing is posted automatically in v1.
-- [ ] **Show it:** a Reproduction section on the plan page (warn if a chat bug has none),
-      and a before/after table in the PR description and in the Linear QA comment
-      (`deployments.comment_body`).
-- Known limits: bugs that depend on one employee's real ERP data won't reproduce locally;
-  policy answers need the slot's database seeded.
+- [ ] **Ship the VM's api logs to Loki,** then set `SF_LOKI_URL`, `SF_LOKI_SELECTOR` and
+      the Loki credentials. The compose files have no `logging:` rotation either, so the
+      VM's Docker logs grow until the disk fills.
+- [ ] **Merge the prompt override hook in the target** (branch `feat/prompt-override-hook`):
+      `PROMPT_OVERRIDE_DIR` in `agents/prompts.fetch_prompt`. Until it's on dev, replays
+      and the browser check use Langfuse's prompts, not the worktree's `prompt-changes/`.
+- [ ] **Install Node and Chrome where the worker runs,** for the agents' browser
+      (`SF_PLAYWRIGHT_MCP`).
 
 ## Not built yet
 
-- [ ] **API logs as context**, from the shared Loki once the target's VM ships its
-      docker compose logs there. A factory tool (`$SF_LOGS --since --until --grep`, like
-      `$SF_REPLAY`) runs a read-only LogQL query, scrubs it like `trace_cleaner`, and saves
-      it to the issue's workspace. Triage pre-fetches a window: the trace's turn times for
-      chat bugs, the issue's creation time for others. Filter by user and errors, not time
-      alone. Agents get the tool, never Loki's credentials.
-- [ ] **Factory metrics:** plans sent back for rework, verification failures, bugs that
-      come back after a fix, and how long each stage takes. They show whether the factory
-      is getting better, and a rise in bugs that come back would mean a check after deploy
-      is needed after all.
 - [ ] **Changes in Linear after an issue is queued.** Re-read the issue before each job:
       cancelled or duplicate means stop and release the slot; an edited description means
       plan again.
@@ -70,9 +35,6 @@ Plans are approved without evidence that the bug happens, and PRs don't show it'
       summaries of issues already in flight, so it can say "same root cause as BEI-12".
 - [ ] **Reviewer comments on the PR.** "Changes requested" in Azure DevOps reaches nobody;
       queue an update job with the comments, as conflicts and failed builds do.
-- [ ] **Stop servers agents leave running.** Teardown doesn't stop an app an agent
-      started. The slot's ports stay taken, and on Windows the worktree can't be removed
-      while its files are in use, so the cleanup retry keeps failing.
 - [ ] **Track prompt fixes to apply in Langfuse.** A merged PR with `prompt-changes/*.md`
       should show up as "prompt to apply" until someone has.
 - [ ] **Overlap warning noise.** Nearly every plan mentions
@@ -90,6 +52,16 @@ Plans are approved without evidence that the bug happens, and PRs don't show it'
 
 ## Built, not yet run for real
 
+- [ ] **Reproduce, verify, show evidence** (`docs/running.md`): `reproduction.json` and
+      the not-reproduced gate with the QA question, `$SF_REPLAY`, the browser, the failing
+      test first, `verifying-fix` with the factory's re-run, the before/after table in the
+      PR and on the plan page, and Reproduced/Checked in the QA comment. Tested with fakes
+      only; the first real chat bug and the first UI bug are the real tests. Check that
+      replays work on a slot's database and that agents can sign in through the IdP headless.
+- [ ] **API logs and `query_logs`.** Tested against a fake Loki; waits on the logs being
+      shipped.
+- [ ] **Metrics** (`/metrics`): the counts depend on event texts the pipeline writes; check
+      them against a month of real history.
 - [ ] **Root cause and fix in the Linear QA comment.** The implementer's structured output
       hasn't run in a real implementation yet.
 - [ ] **The full deploy flow:** merge → Pending Deployment → In Review with the comment.

@@ -9,12 +9,13 @@ go back to their agent. The web app only moves issues into the queued statuses.
 import argparse
 import importlib
 import traceback
+from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 
 import anyio
 import httpx
 
-from software_factory import cleanup, config, pull_requests, reset, store
+from software_factory import cleanup, config, logs, pull_requests, reset, store
 from software_factory.environment import fetch_base
 from software_factory.linear import LinearError, list_todo_bugs
 
@@ -147,6 +148,25 @@ def reset_command(args) -> int:
     return 0
 
 
+def logs_command(args) -> int:
+    """Fetch an issue's api logs from Loki into its workspace, as triage and agents would."""
+    issue = store.find_issue(args.issue)
+    if issue is None:
+        print(f"No issue {args.issue}.")
+        return 2
+    ws = store.issue_dir(issue["id"])
+    try:
+        start = datetime.fromisoformat(args.since.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(args.until.replace("Z", "+00:00")) if args.until else datetime.now(UTC)
+        entries = anyio.run(logs.query, start, end, logs.logql(args.contains, args.errors_only))
+    except (ValueError, logs.LogsError) as e:
+        print(f"Couldn't query the logs: {e}")
+        return 1
+    path = logs.write(ws, "manual-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S"), entries)
+    print(f"{len(entries)} lines, saved to {path}")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="software-factory")
     commands = parser.add_subparsers(dest="command")
@@ -167,10 +187,22 @@ def main() -> None:
     )
     reset_parser.add_argument("--force", action="store_true", help="Reset even with a run in progress, after a crash")
     reset_parser.add_argument("--yes", action="store_true", help="Don't ask before resetting everything")
+    logs_parser = commands.add_parser(
+        "logs",
+        help="Fetch an issue's api logs from Loki into its workspace",
+        description="Query Loki as the agents' query_logs tool does, and save the scrubbed lines.",
+    )
+    logs_parser.add_argument("issue", help="The issue's identifier, e.g. BEI-12")
+    logs_parser.add_argument("--since", required=True, help="ISO 8601 with a zone, e.g. 2026-11-02T09:30:00Z")
+    logs_parser.add_argument("--until", help="ISO 8601 with a zone; now when left out")
+    logs_parser.add_argument("--contains", help="Only lines with this text, e.g. a conversation id")
+    logs_parser.add_argument("--errors-only", action="store_true", help="Only warnings and errors")
     args = parser.parse_args()
 
     if args.command == "reset":
         raise SystemExit(reset_command(args))
+    if args.command == "logs":
+        raise SystemExit(logs_command(args))
     anyio.run(ingest if args.command == "ingest" else run_worker)
 
 

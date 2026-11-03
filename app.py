@@ -1,16 +1,18 @@
+import asyncio
 import json
 import os
 from datetime import datetime
 
+import httpx
 import nh3
 from markdown_it import MarkdownIt
 from dotenv import load_dotenv
-from flask import Flask, Response, abort, flash, render_template, redirect, url_for, request
+from flask import Flask, Response, abort, flash, render_template, redirect, send_from_directory, url_for, request
 from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from software_factory import config, dev_changes, home, store
+from software_factory import config, dev_changes, evidence, home, linear, metrics, reproduction, store
 from software_factory.environment import branch_name
 from software_factory.overlap import overlaps
 
@@ -23,6 +25,7 @@ CSRFProtect(app)
 # Pages draw statuses and ages the way the home page does
 app.add_template_filter(home.ago, "ago")
 app.add_template_global(home.look, "look")
+app.add_template_filter(metrics.duration, "duration")
 
 
 def _load_users(spec: str) -> dict[str, str]:
@@ -96,12 +99,26 @@ def issue_home():
         bug_label=config.LINEAR_BUG_LABEL,
     )
 
+METRIC_WINDOWS = (7, 30, 90)
+
+
+@app.route("/metrics")
+def factory_metrics():
+    days = request.args.get("days", 30, type=int)
+    if days not in METRIC_WINDOWS:
+        days = 30
+    return render_template("metrics.html", m=metrics.summary(days), windows=METRIC_WINDOWS)
+
+
 @app.route("/issue/<issue_id>/plan")
 def issue_detail(issue_id):
     issue = _issue_or_404(issue_id)
     plan = _read(issue_id, "plan.md")
     actions = store.allowed_actions(issue)
     events = store.events(issue_id)
+    ws = store.issue_dir(issue_id)
+    repro = reproduction.load(ws)
+    verified = evidence.table(ws, for_pr=False)
 
     return render_template(
         "issue_detail.html",
@@ -115,10 +132,23 @@ def issue_detail(issue_id):
         events=events,
         flow=home.flow(issue, events),
         pr=_pull_request(issue),
+        repro=repro,
+        verification=render_md(verified) if verified else None,
+        screenshots=evidence.screenshots(ws),
+        repro_look=REPRODUCTION_LOOK.get(repro["status"]) if repro else None,
+        # A chat bug can be replayed, so anything else is weaker evidence
+        replay_missing=plan is not None and (ws / "conversation.json").exists()
+        and (repro is None or repro.get("method") != "replay"),
         linear_writeback=config.LINEAR_WRITEBACK,
         base_branch=config.BASE_BRANCH,
     )
 
+
+REPRODUCTION_LOOK = {
+    reproduction.REPRODUCED: ("done", "reproduced"),
+    reproduction.NOT_REPRODUCED: ("attn", "not reproduced"),
+    reproduction.NOT_ATTEMPTED: ("ship", "not attempted"),
+}
 
 MERGED_STATUSES = frozenset({store.MERGED, store.DEPLOY_PENDING, store.DEPLOYED})
 
@@ -140,6 +170,7 @@ def _pull_request(issue) -> dict | None:
         "base": config.BASE_BRANCH,
         "root_cause": qa.get("root_cause"),
         "fix": qa.get("fix"),
+        "checked": qa.get("checked"),
         "report": render_md(report) if report else None,
     }
 
@@ -172,7 +203,12 @@ def _queue(issue_id: str, action: str, **fields):
 
 @app.route("/issue/<issue_id>/approve", methods=["POST"])
 def approve_plan(issue_id: str):
-    return _queue(issue_id, "approve", plan_reviewed_by=request.authorization.username)
+    return _queue(
+        issue_id,
+        "approve",
+        plan_reviewed_by=request.authorization.username,
+        browser_check=int(request.form.get("browser_check") == "1"),
+    )
 
 @app.route("/issue/<issue_id>/rework-plan", methods=["POST"])
 def rework_plan(issue_id: str):
@@ -194,3 +230,32 @@ def open_pr(issue_id: str):
 @app.route("/issue/<issue_id>/release", methods=["POST"])
 def release_issue(issue_id: str):
     return _queue(issue_id, "release")
+
+@app.route("/issue/<issue_id>/post-qa-question", methods=["POST"])
+def post_qa_question(issue_id: str):
+    """Post the planner's question for QA to Linear, as edited by the person who clicked."""
+    _issue_or_404(issue_id)
+    question = request.form.get("question", "").strip()
+    if not question:
+        flash("Write the question before posting it.")
+    elif not config.LINEAR_WRITEBACK:
+        flash("Posting to Linear is off (SF_LINEAR_WRITEBACK=0).")
+    else:
+        try:
+            asyncio.run(linear.comment(issue_id, question))
+        except (linear.LinearError, httpx.HTTPError) as e:
+            flash(f"Couldn't post the question to Linear: {e}")
+        else:
+            store.add_event(issue_id, "QA question posted to Linear", actor=request.authorization.username)
+            flash("Question posted to Linear. When QA answers, send the answer as rework.")
+    return redirect(url_for("issue_detail", issue_id=issue_id))
+
+
+@app.route("/issue/<issue_id>/evidence/<name>")
+def evidence_file(issue_id: str, name: str):
+    """A screenshot the agent saved while reproducing or checking the bug."""
+    _issue_or_404(issue_id)
+    # Only names the folder lists, so nothing outside it can be asked for
+    if name not in evidence.screenshots(store.issue_dir(issue_id)):
+        abort(404)
+    return send_from_directory(store.issue_dir(issue_id) / evidence.EVIDENCE_DIR, name)

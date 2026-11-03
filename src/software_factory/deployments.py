@@ -1,8 +1,9 @@
-"""Tell QA in Linear that a fix has shipped: In Review, with the root cause and the fix."""
+"""Tell QA in Linear that a fix has shipped: In Review, with the root cause, the fix, and how
+it was reproduced and checked."""
 
 import json
 
-from software_factory import config, linear, store
+from software_factory import config, evidence, linear, store
 from software_factory.trace_cleaner import EMAIL_RE, PHONE_RE
 
 
@@ -27,8 +28,11 @@ def comment_body(issue, build: dict | None = None) -> str:
         headline = " · ".join(filter(None, [f"**Fix merged into {config.BASE_BRANCH}**", pr]))
 
     sections = [headline]
+    ws = store.issue_dir(issue["id"])
     qa = qa_summary(issue["id"])
-    for key, label in (("root_cause", "Root cause"), ("fix", "Fix")):
+    if reproduced := evidence.reproduced_sentence(ws):
+        qa["reproduced"] = reproduced
+    for key, label in (("root_cause", "Root cause"), ("fix", "Fix"), ("reproduced", "Reproduced"), ("checked", "Checked")):
         if qa.get(key):
             sections.append(f"**{label}:** {scrub(qa[key])}")
     return "\n\n".join(sections)

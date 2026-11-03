@@ -13,7 +13,10 @@ from software_factory import cleanup, store
 from software_factory.environment import branch_name
 
 # What a run leaves in the workspace; set aside on a fresh start so the next run can't read it
-ARTIFACTS = ("issue.md", "plan.md", "report.md", "qa.json", "review.md", "review.json", "conversation.json", "attachments")
+ARTIFACTS = (
+    "issue.md", "plan.md", "report.md", "qa.json", "review.md", "review.json", "conversation.json",
+    "attachments", "reproduction.json", "replay.json", "replays", "verification.json", "evidence", "logs",
+)
 # Finished issues: reset --all leaves them alone
 FINISHED = frozenset({store.MERGED, store.DEPLOY_PENDING, store.DEPLOYED, store.RELEASED})
 

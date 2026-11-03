@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+
+{% block title %}Metrics{% endblock %}
+
+{% block content %}
+    <a class="sf-back" href="{{ url_for('issue_home') }}">{{ ui.icon("arrow-right", 14) }}Issues</a>
+    <div class="sf-board-bar">
+        <h1>Metrics</h1>
+        <nav class="sf-windows" aria-label="Window">
+            {% for days in windows %}
+            <a class="sf-btn sf-btn-sm {{ 'sf-btn-secondary' if days == m.days else 'sf-btn-ghost' }}" href="{{ url_for('factory_metrics', days=days) }}"{% if days == m.days %} aria-current="page"{% endif %}>{{ days }} days</a>
+            {% endfor %}
+        </nav>
+    </div>
+
+    {% if not m.issues %}
+    <div class="sf-panel"><div class="sf-empty"><p class="sf-empty-body">Nothing happened in the last {{ m.days }} days.</p></div></div>
+    {% else %}
+    <div class="sf-tiles">
+        <div class="sf-tile is-static sf-k-review">
+            <span class="sf-tile-top">{{ ui.status_icon("review") }}<span>Plans sent back</span></span>
+            <span class="sf-tile-n sf-mono">{{ '%d%%' | format(100 * m.rework_rate) if m.rework_rate is not none else '—' }}</span>
+            <span class="sf-tile-caption">{{ m.reworks }} reworks of {{ m.plans }} plans · {{ m.approved_first_time }} of {{ m.approved }} approved first time</span>
+        </div>
+        <div class="sf-tile is-static sf-k-attn">
+            <span class="sf-tile-top">{{ ui.status_icon("attn") }}<span>Verification failures</span></span>
+            <span class="sf-tile-n sf-mono">{{ m.verification_failed }}</span>
+            <span class="sf-tile-caption">{{ m.verification_passed }} passed before the PR</span>
+        </div>
+        <div class="sf-tile is-static sf-k-ship">
+            <span class="sf-tile-top">{{ ui.status_icon("ship") }}<span>Bugs that came back</span></span>
+            <span class="sf-tile-n sf-mono">{{ m.came_back }}</span>
+            <span class="sf-tile-caption">of {{ m.merged }} merged · {{ m.prs }} PRs opened</span>
+        </div>
+        <div class="sf-tile is-static sf-k-done">
+            <span class="sf-tile-top">{{ ui.status_icon("done") }}<span>Agent cost</span></span>
+            <span class="sf-tile-n sf-mono">${{ '%.0f' | format(m.cost) }}</span>
+            <span class="sf-tile-caption">{{ m.issues }} issues active</span>
+        </div>
+    </div>
+
+    <section class="sf-section" aria-labelledby="stages-heading">
+        <div class="sf-section-head"><h2 id="stages-heading">Time in each stage</h2></div>
+        <div class="sf-panel sf-table-wrap" style="overflow: hidden">
+            <table class="sf-table">
+                <thead><tr><th scope="col">Stage</th><th scope="col" class="is-num">Issues</th><th scope="col" class="is-num">Median</th><th scope="col" class="is-num">90th percentile</th></tr></thead>
+                <tbody>
+                {% for s in m.stages %}
+                <tr><td>{{ s.label }}</td><td class="sf-mono is-num">{{ s.count }}</td><td class="sf-mono is-num">{{ s.median | duration }}</td><td class="sf-mono is-num">{{ s.p90 | duration }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="sf-section" aria-labelledby="repro-heading">
+        <div class="sf-section-head"><h2 id="repro-heading">Reproduction</h2></div>
+        <div class="sf-panel">
+            <dl class="sf-pr-body sf-facts">
+                <dt>Reproduced</dt><dd class="sf-mono">{{ m.reproduction.get('reproduced', 0) }}</dd>
+                <dt>Not reproduced</dt><dd class="sf-mono">{{ m.reproduction.get('not_reproduced', 0) }} <span class="sf-muted">· {{ m.qa_questions }} questions posted to QA</span></dd>
+                <dt>Not attempted</dt><dd class="sf-mono">{{ m.reproduction.get('not_attempted', 0) }}</dd>
+            </dl>
+        </div>
+    </section>
+
+    {% if m.attention %}
+    <section class="sf-section" aria-labelledby="attention-heading">
+        <div class="sf-section-head"><h2 id="attention-heading">Why issues needed attention</h2></div>
+        <div class="sf-panel sf-table-wrap" style="overflow: hidden">
+            <table class="sf-table">
+                <thead><tr><th scope="col">Reason</th><th scope="col" class="is-num">Times</th></tr></thead>
+                <tbody>
+                {% for reason, count in m.attention %}
+                <tr><td>{{ reason }}</td><td class="sf-mono is-num">{{ count }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {% endif %}
+
+    {% if m.runs %}
+    <section class="sf-section" aria-labelledby="runs-heading">
+        <div class="sf-section-head"><h2 id="runs-heading">Agent runs</h2></div>
+        <div class="sf-panel sf-table-wrap" style="overflow: hidden">
+            <table class="sf-table">
+                <thead><tr><th scope="col">Phase</th><th scope="col" class="is-num">Runs</th><th scope="col" class="is-num">Failed</th><th scope="col" class="is-num">Median</th><th scope="col" class="is-num">Cost</th></tr></thead>
+                <tbody>
+                {% for r in m.runs %}
+                <tr>
+                    <td>{{ r.phase }}</td>
+                    <td class="sf-mono is-num">{{ r.count }}</td>
+                    <td class="sf-mono is-num">{{ r.failed }}</td>
+                    <td class="sf-mono is-num">{{ '%.0fm' | format(r.median_minutes) if r.median_minutes is not none else '—' }}</td>
+                    <td class="sf-mono is-num">${{ '%.2f' | format(r.cost) }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {% endif %}
+    {% endif %}
+{% endblock %}

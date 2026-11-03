@@ -10,6 +10,7 @@
     <header class="sf-top">
       <a class="sf-wordmark" href="{{ url_for('issue_home') }}"><span class="sf-wordmark-mark" aria-hidden="true"></span>Software Factory</a>
       {% block top %}{% endblock %}
+      <a class="sf-top-note" href="{{ url_for('factory_metrics') }}">Metrics</a>
     </header>
     <main class="sf-page {% block page_class %}{% endblock %}">
       {% if paused_until %}
