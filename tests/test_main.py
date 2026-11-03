@@ -20,9 +20,29 @@ def result(subtype="success", is_error=False, text="done") -> ResultMessage:
     return ResultMessage(subtype=subtype, duration_ms=10, duration_api_ms=10, is_error=is_error, num_turns=3, session_id="s2", total_cost_usd=0.5, result=text)
 
 
-def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=None):
+PASSED = {"status": "passed", "test": {"command": "uv run pytest -k grade", "before": "1 failed", "after": "1 passed"}}
+
+
+def implemented(report="Root cause: x", verification=PASSED, **fields) -> ResultMessage:
+    """An implementation run's result, with the structured output the schema asks for."""
+    done = result(text=report)
+    done.structured_output = {"report": report, "root_cause": "Why.", "fix": "What.", "checked": "How.", "verification": verification, **fields}
+    return done
+
+
+REPRODUCED = {"status": "reproduced", "method": "test", "steps": ["pytest -k grade"], "evidence": "AssertionError: '.None'"}
+
+
+def write_reproduction(record=REPRODUCED, issue_id="issue-1"):
+    ws = store.issue_dir(issue_id)
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=None, reproduction=REPRODUCED):
     """Replace ClaudeSDKClient. exit_plan, if given, is sent to the session's callback as
-    ExitPlanMode input; work, if given, is called as the agent's edits and commits."""
+    ExitPlanMode input, after writing reproduction (if any) as the planner's record; work,
+    if given, is called as the agent's edits and commits."""
     sessions = []
 
     class FakeClient:
@@ -41,6 +61,8 @@ def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=No
 
         async def receive_response(self):
             if exit_plan is not None:
+                if reproduction is not None:
+                    write_reproduction(reproduction)
                 await self.options.can_use_tool("ExitPlanMode", exit_plan, None)
             if work is not None:
                 work()
@@ -141,16 +163,43 @@ def test_plan_callback_answers_questions_with_a_deny(plan_callback):
 
 def test_exit_plan_mode_saves_plan_and_interrupts(plan_callback, tmp_path):
     ws, callback = plan_callback
+    write_reproduction()
     plan_file = tmp_path / "plan.md"
     plan_file.write_text("# Plan")
     denied = decide(callback, "ExitPlanMode", {"planFilePath": str(plan_file)})
     assert denied.interrupt is True
     assert (ws / "plan.md").read_text() == "# Plan"
     assert issue()["status"] == store.PLAN_READY
+    assert issue()["reproduction"] == "reproduced"
+
+
+def test_exit_plan_mode_without_a_reproduction_record_asks_for_one(plan_callback):
+    ws, callback = plan_callback
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Plan"})
+    assert not denied.interrupt
+    assert str(ws / "reproduction.json") in denied.message
+    assert not (ws / "plan.md").exists()
+    assert issue()["status"] == store.PLANNING
+
+
+def test_exit_plan_mode_names_what_the_reproduction_record_lacks(plan_callback):
+    _, callback = plan_callback
+    write_reproduction({"status": "not_reproduced", "method": "browser", "steps": ["open leave page"], "evidence": "shows 12"})
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Findings"})
+    assert not denied.interrupt
+    assert "qa_question" in denied.message
+    assert issue()["status"] == store.PLANNING
+
+
+def test_plan_callback_allows_writing_only_the_reproduction_record(plan_callback):
+    ws, callback = plan_callback
+    assert isinstance(decide(callback, "Write", {"file_path": str(ws / "reproduction.json")}), PermissionResultAllow)
+    assert isinstance(decide(callback, "Write", {"file_path": str(ws / "plan.md")}), PermissionResultDeny)
 
 
 def test_exit_plan_mode_without_a_plan_asks_again(plan_callback):
     _, callback = plan_callback
+    write_reproduction()
     denied = decide(callback, "ExitPlanMode", {})
     assert not denied.interrupt
     assert issue()["status"] == store.PLANNING
@@ -195,6 +244,9 @@ def test_triage_gives_agent_reachable_context_and_saves_plan(triage, monkeypatch
     assert str(ws / "attachments" / "attachment_0.png") in prompt
     assert str(ws / "conversation.json") in prompt
     assert json.loads((ws / "conversation.json").read_text(encoding="utf-8"))["session_id"] == CONVERSATION_ID
+    assert json.loads((ws / "replay.json").read_text(encoding="utf-8"))["failing_turn"] == 1
+    assert "$SF_REPLAY --turn N --label before" in prompt and str(ws / "replay.json") in prompt
+    assert str(ws / "reproduction.json") in prompt
     assert issue()["status"] == store.PLAN_READY
     assert sessions[0].options.max_turns == main.LIMITS["plan"]["max_turns"]
     assert issue()["plan_base"] == git(main.ensure_worktree(None), "rev-parse", "HEAD")
@@ -219,6 +271,9 @@ def pr_calls(monkeypatch, tmp_path: Path) -> list:
 
     monkeypatch.setattr(main, "open_pull_request", fake_open)
     monkeypatch.setattr(main, "ensure_worktree", lambda _: tmp_path / "worktree")
+    monkeypatch.setattr(main, "stop_servers", lambda slot: [])
+    # The factory's own run of the reproducing test passes unless a test says otherwise
+    monkeypatch.setattr(main, "rerun_test", lambda issue, worktree, command: (True, "1 passed"))
     return calls
 
 
@@ -240,7 +295,7 @@ def test_implementation_hitting_turn_limit_needs_attention_and_skips_push(monkey
 
 def test_successful_implementation_writes_report_and_opens_pr(monkeypatch, pr_calls):
     ws = seed_issue(store.IMPLEMENTING)
-    fake_agent(monkeypatch, results=[result(text="Root cause: x")])
+    fake_agent(monkeypatch, results=[implemented("Root cause: x")])
     implement()
     assert (ws / "report.md").read_text() == "Root cause: x"
     assert pr_calls == ["issue-1"]
@@ -393,7 +448,7 @@ def test_retried_implementation_is_told_to_continue(monkeypatch, pr_calls):
     store.claim_next()
     sessions = fake_agent(monkeypatch)
     implement()
-    assert sessions[0].prompt == main.CONTINUE_PROMPT
+    assert sessions[0].prompt == main.CONTINUE_PROMPT.format(steps=main.implement_steps(issue()))
 
 
 def test_api_429_without_an_event_still_requeues(monkeypatch, pr_calls):
@@ -408,7 +463,7 @@ def test_api_429_without_an_event_still_requeues(monkeypatch, pr_calls):
 
 def test_rejection_the_run_recovered_from_is_ignored(monkeypatch, pr_calls):
     seed_issue(store.IMPLEMENTING)
-    fake_agent(monkeypatch, results=[rejected(time.time() + 900), result(text="Root cause: x")])
+    fake_agent(monkeypatch, results=[rejected(time.time() + 900), implemented("Root cause: x")])
     implement()
     assert pr_calls == ["issue-1"]
     assert store.paused_until() is None
@@ -446,14 +501,16 @@ def test_reopened_bug_plans_with_the_previous_attempt(triage, monkeypatch):
 
 def test_implementation_keeps_its_report_and_qa_summary_apart(monkeypatch, pr_calls):
     ws = seed_issue(store.IMPLEMENTING)
-    done = result(text='{"report": "..."}')
-    done.structured_output = {"report": "Root cause: naive UTC times", "root_cause": " Times were read as local time. ", "fix": "Read as UTC."}
+    done = implemented("Root cause: naive UTC times", root_cause=" Times were read as local time. ", fix="Read as UTC.", checked="Opened the page.")
     sessions = fake_agent(monkeypatch, results=[done])
     implement()
     assert (ws / "report.md").read_text() == "Root cause: naive UTC times"
-    assert json.loads((ws / "qa.json").read_text()) == {"root_cause": "Times were read as local time.", "fix": "Read as UTC."}
+    assert json.loads((ws / "qa.json").read_text()) == {
+        "root_cause": "Times were read as local time.", "fix": "Read as UTC.", "checked": "Opened the page."
+    }
+    assert json.loads((ws / "verification.json").read_text())["status"] == "passed"
     assert sessions[0].options.output_format["schema"] == main.IMPLEMENTATION_SCHEMA
-    assert "root_cause and fix" in sessions[0].prompt
+    assert "root_cause, fix and checked" in sessions[0].prompt
 
 
 def test_implementation_without_structured_output_still_reports(monkeypatch, pr_calls):
@@ -462,3 +519,94 @@ def test_implementation_without_structured_output_still_reports(monkeypatch, pr_
     implement()
     assert (ws / "report.md").read_text() == "Root cause: x"
     assert not (ws / "qa.json").exists()
+
+
+# Verification before the PR
+
+
+def fix_rounds(sessions) -> list:
+    return [s for s in sessions if "<verification_failure>" in s.prompt]
+
+
+def test_verified_fix_opens_the_pr_with_the_factory_rerun_recorded(monkeypatch, pr_calls):
+    ws = seed_issue(store.IMPLEMENTING)
+    sessions = fake_agent(monkeypatch, results=[implemented()])
+    implement()
+    assert pr_calls == ["issue-1"] and fix_rounds(sessions) == []
+    rerun = json.loads((ws / "verification.json").read_text())["rerun"]
+    assert rerun == {"command": "uv run pytest -k grade", "passed": True, "output": "1 passed"}
+    assert "Verification passed" in [e["detail"] for e in store.events("issue-1")]
+
+
+def test_failed_verification_goes_back_to_the_implementer_once(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    failed = {"status": "failed", "notes": "Still shows .None"}
+    sessions = fake_agent(monkeypatch, results=[implemented(verification=failed)])
+    implement()
+    (fix,) = fix_rounds(sessions)
+    assert "Still shows .None" in fix.prompt
+    assert issue()["status"] == store.NEEDS_ATTENTION
+    assert issue()["needs_attention_reason"].startswith("Verification failed: The implementer's verification failed.")
+    assert pr_calls == []
+    assert [r["phase"] for r in store.runs("issue-1")] == ["implement", "fix"]
+
+
+def test_a_fix_round_that_verifies_opens_the_pr(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    outcomes = iter([(False, "AssertionError"), (True, "1 passed")])
+    monkeypatch.setattr(main, "rerun_test", lambda issue, worktree, command: next(outcomes))
+    sessions = fake_agent(monkeypatch, results=[implemented()])
+    implement()
+    (fix,) = fix_rounds(sessions)
+    assert "fails when the factory runs it" in fix.prompt and "AssertionError" in fix.prompt
+    assert pr_calls == ["issue-1"]
+
+
+def test_unverifiable_fix_needs_attention_and_can_still_be_published(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    sessions = fake_agent(monkeypatch, results=[implemented(verification={"status": "not_possible", "notes": "ERP is down"})])
+    implement()
+    assert fix_rounds(sessions) == []
+    assert issue()["status"] == store.NEEDS_ATTENTION
+    assert "ERP is down" in issue()["needs_attention_reason"]
+    assert "publish" in store.allowed_actions(issue())
+
+
+def test_required_browser_check_is_asked_for_and_enforced(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING, browser_check=1)
+    sessions = fake_agent(monkeypatch, results=[implemented()])
+    implement()
+    assert main.BROWSER_REQUIRED in sessions[0].prompt
+    (fix,) = fix_rounds(sessions)
+    assert "required a browser check, and it wasn't done" in fix.prompt
+    assert issue()["status"] == store.NEEDS_ATTENTION
+
+
+def test_optional_browser_check_by_default(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    sessions = fake_agent(monkeypatch, results=[implemented()])
+    implement()
+    assert main.BROWSER_OPTIONAL in sessions[0].prompt
+
+
+def test_agents_get_a_headless_browser_saving_to_the_workspace(monkeypatch, pr_calls):
+    ws = seed_issue(store.IMPLEMENTING)
+    sessions = fake_agent(monkeypatch, results=[implemented()])
+    implement()
+    server = sessions[0].options.mcp_servers["playwright"]
+    assert config.PLAYWRIGHT_MCP in server["args"] and "--headless" in server["args"]
+    assert str(ws / "evidence") in server["args"]
+    monkeypatch.setattr(config, "PLAYWRIGHT_MCP", "")
+    assert main.mcp_servers(ws) == {}
+
+
+def test_planner_may_use_the_browser(plan_callback):
+    _, callback = plan_callback
+    assert isinstance(decide(callback, "mcp__playwright__browser_navigate", {"url": "http://localhost:4301"}), PermissionResultAllow)
+
+
+def test_rerun_runs_the_command_in_the_worktree(tmp_path):
+    seed_issue(store.IMPLEMENTING)
+    passed, output = main.rerun_test(issue(), tmp_path, 'python -c "print(42); raise SystemExit(3)"')
+    assert (passed, output) == (False, "42")
+    assert main.rerun_test(issue(), tmp_path, 'python -c "print(1)"') == (True, "1")

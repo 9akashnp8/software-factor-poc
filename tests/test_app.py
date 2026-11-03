@@ -1,4 +1,5 @@
 import base64
+import json
 import re
 import time
 from pathlib import Path
@@ -194,3 +195,109 @@ def test_stylesheet_leaves_plan_lists_alone(client, ws):
     css = client.get("/static/factory.css", headers=AUTH).get_data(as_text=True)
     # A bare li rule would restyle every plan bullet
     assert not re.search(r"(^|[},]\s*)li\b[^{]*\{", css, re.M)
+
+
+NOT_REPRODUCED = {
+    "status": "not_reproduced",
+    "method": "browser",
+    "steps": ["Open the leave balance page"],
+    "evidence": "Shows 12 days, as expected",
+    "qa_question": "Which employee and which day did you see 0 days for?",
+}
+
+
+def not_reproduced(ws: Path):
+    (ws / "reproduction.json").write_text(json.dumps(NOT_REPRODUCED), encoding="utf-8")
+    store.set_fields("issue-1", reproduction="not_reproduced")
+
+
+def test_reproduction_shows_on_the_plan_page(client, ws):
+    record = {"status": "reproduced", "method": "test", "steps": ["pytest -k grade"], "evidence": "AssertionError: '.None'"}
+    (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Reproduction" in page and "reproduced" in page and "AssertionError: &#39;.None&#39;" in page
+    assert "Approve plan" in page and "Question for QA" not in page
+
+
+def test_a_bug_that_did_not_reproduce_cant_be_approved(client, ws):
+    not_reproduced(ws)
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Approve plan" not in page and "Request rework" in page
+    assert "Which employee and which day" in page and "Findings" in page
+    token = csrf_token(client)
+    client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token})
+    assert store.get_issue("issue-1")["status"] == store.PLAN_READY
+
+
+def test_chat_bug_without_a_replay_is_flagged(client, ws):
+    (ws / "conversation.json").write_text("{}", encoding="utf-8")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Not replayed." in page
+
+
+def test_posting_the_qa_question_comments_on_linear(client, ws, monkeypatch):
+    not_reproduced(ws)
+    monkeypatch.setattr(web.config, "LINEAR_WRITEBACK", True)
+    posted = []
+
+    async def fake_comment(issue_id, body):
+        posted.append((issue_id, body))
+
+    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    token = csrf_token(client)
+    response = client.post(
+        "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": token, "question": "Which day?"}, follow_redirects=True
+    )
+    assert posted == [("issue-1", "Which day?")]
+    assert "Question posted to Linear" in response.get_data(as_text=True)
+    assert store.events("issue-1")[-1]["detail"] == "QA question posted to Linear"
+    assert store.events("issue-1")[-1]["actor"] == "akash"
+
+
+def test_qa_question_isnt_posted_while_writeback_is_off(client, ws, monkeypatch):
+    not_reproduced(ws)
+    posted = []
+
+    async def fake_comment(issue_id, body):
+        posted.append(body)
+
+    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    token = csrf_token(client)
+    response = client.post(
+        "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": token, "question": "Which day?"}, follow_redirects=True
+    )
+    assert posted == [] and "SF_LINEAR_WRITEBACK=0" in response.get_data(as_text=True)
+
+
+def test_approving_can_require_a_browser_check(client, ws):
+    token = csrf_token(client)
+    assert "Require a browser check" in client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token, "browser_check": "1"})
+    assert store.get_issue("issue-1")["browser_check"] == 1
+
+
+def test_approving_without_the_box_leaves_the_browser_check_to_the_agent(client, ws):
+    token = csrf_token(client)
+    client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token})
+    assert store.get_issue("issue-1")["browser_check"] == 0
+
+
+def test_plan_page_shows_verification_and_serves_only_listed_screenshots(client, ws):
+    (ws / "verification.json").write_text(json.dumps({"status": "passed", "browser": {"done": True, "passed": True, "result": "Shows 12 days"}}))
+    (ws / "evidence").mkdir()
+    (ws / "evidence" / "after.png").write_bytes(b"\x89PNG")
+    (ws / "secret.txt").write_text("no")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Verification" in page and "passed: Shows 12 days" in page
+    assert "/issue/issue-1/evidence/after.png" in page
+    assert client.get("/issue/issue-1/evidence/after.png", headers=AUTH).data == b"\x89PNG"
+    assert client.get("/issue/issue-1/evidence/..%2Fsecret.txt", headers=AUTH).status_code == 404
+    assert client.get("/issue/issue-1/evidence/other.png", headers=AUTH).status_code == 404
+
+
+def test_metrics_page(client, ws):
+    page = client.get("/metrics", headers=AUTH).get_data(as_text=True)
+    assert "Plans sent back" in page and "Time in each stage" in page
+    assert 'aria-current="page">30 days' in page
+    assert 'aria-current="page">7 days' in client.get("/metrics?days=7", headers=AUTH).get_data(as_text=True)
+    assert 'aria-current="page">30 days' in client.get("/metrics?days=5", headers=AUTH).get_data(as_text=True)

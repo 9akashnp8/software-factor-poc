@@ -28,15 +28,19 @@ must apply to every call belongs in a PreToolUse hook.
 - **File edits always go to `can_use_tool`**, even when an allow rule or a hook says
   `allow`. That includes the plan itself: the agent writes it with `Write` to
   `~/.claude/plans/<name>.md` (or the `plansDirectory` setting), and our callback allows
-  only that directory.
+  only that directory, plus the issue's `reproduction.json` in its workspace.
 - **Shell commands go to the auto mode classifier, not to `can_use_tool`,** when auto mode
   is available to the session and the `useAutoModeDuringPlan` setting is on (the default).
   The classifier approves or blocks each command. It can also approve read-only calls such
   as `WebFetch` that would otherwise reach the callback.
 - When auto mode isn't available (an unsupported model or provider) or
   `useAutoModeDuringPlan` is off, commands outside the read-only set reach `can_use_tool`.
-- `ExitPlanMode` reaches `can_use_tool`. The factory copies the plan to the workspace,
-  then denies the call with `interrupt=True`, which ends the run so a person can review it.
+- `ExitPlanMode` reaches `can_use_tool`. Without a valid `reproduction.json` the callback
+  denies it, without interrupting, and says what's missing. Otherwise the factory copies
+  the plan to the workspace, then denies the call with `interrupt=True`, which ends the run
+  so a person can review it.
+- MCP tools reach `can_use_tool`. The callback allows the browser (`mcp__playwright__*`)
+  and the factory's own tools (`mcp__factory__*`, the log search), and denies the rest.
 - `AskUserQuestion` reaches `can_use_tool`. Nobody can answer in a headless run, so the
   callback denies it and tells the agent to record its assumption in the plan.
 - Reads outside the working directory (the issue's attachments and `conversation.json`
@@ -95,6 +99,19 @@ DevOps PAT.
 
 `permission_mode="auto"`: the classifier reviews shell commands and network requests, and
 file edits inside the working directory are allowed. There's no `can_use_tool`.
+
+## MCP servers
+
+Planning and implementation get, when configured:
+
+- **`playwright`**: a headless Chrome (`@playwright/mcp`, started with `npx`), with an
+  isolated profile and screenshots saved to the issue's `evidence/`.
+- **`factory`**: an SDK server running inside the worker, with `query_logs`. It reads Loki
+  with the worker's own credentials, which are blanked in the agent's environment.
+
+After implementation the worker runs the reproducing test the agent named, with
+`shell=True`, in the worktree and the agent's environment. That's no more than the agent
+could run itself.
 
 ## Blocking `git push`
 

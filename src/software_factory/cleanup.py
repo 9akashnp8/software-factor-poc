@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 from psycopg import sql
 
 from software_factory import config, deployments, linear, store
-from software_factory.environment import branch_name, database_name, worktree_path
+from software_factory.environment import branch_name, database_name, stop_servers, worktree_path
 
 
 def _target_env() -> dict:
@@ -85,7 +85,12 @@ async def teardown(
     identifier = issue["identifier"]
     # An issue that never got past the queue has nothing to tear down
     has_resources = issue["slot"] is not None or worktree_path(identifier).exists()
-    steps = [("dropping the databases", lambda: drop_databases(identifier))] if has_resources else []
+    steps = []
+    if issue["slot"] is not None:
+        # First: a server left running holds the database and the worktree's files open
+        steps.append(("stopping servers left running", lambda: stop_servers(issue["slot"])))
+    if has_resources:
+        steps.append(("dropping the databases", lambda: drop_databases(identifier)))
     if issue["slot"] is not None:
         steps.append(("flushing the Redis DB", lambda: flush_redis(issue["slot"])))
     if has_resources:

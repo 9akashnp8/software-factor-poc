@@ -33,6 +33,8 @@ query IssueContext($id: String!) {
     title
     description
     url
+    # When QA reported it: the window the api's logs are fetched for
+    createdAt
  
     labels {
       nodes {

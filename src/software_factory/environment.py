@@ -11,10 +11,13 @@ import subprocess
 import threading
 from pathlib import Path
 
+import psutil
+
 from software_factory import config, store
 
 # Two jobs adding worktrees to one repository at once can trip over git's locks
 _worktree_lock = threading.Lock()
+REPLAY_SCRIPT = Path(__file__).with_name("replay_turn.py")
 
 
 class ProvisioningError(RuntimeError):
@@ -53,7 +56,48 @@ def slot_env(slot: int, identifier: str) -> dict[str, str]:
 def agent_env(issue) -> dict[str, str]:
     if issue["slot"] is None:
         raise ProvisioningError(f"{issue['identifier']} has no slot")
-    return slot_env(issue["slot"], issue["identifier"])
+    return {
+        **slot_env(issue["slot"], issue["identifier"]),
+        # The workspace (reproduction.json, replays, evidence) is outside the worktree
+        "SF_WORKSPACE": str(store.issue_dir(issue["id"])),
+        "SF_REPLAY": replay_command(worktree_path(issue["identifier"])),
+    }
+
+
+def replay_command(worktree: Path) -> str:
+    """$SF_REPLAY: the replay script, run in the worktree's environment rather than the factory's."""
+    return (
+        f'uv run --all-packages --project "{worktree}" python "{REPLAY_SCRIPT}" --worktree "{worktree}"'
+    )
+
+
+def stop_servers(slot: int) -> list[int]:
+    """Stop whatever listens on the slot's api and web ports: servers an agent left running.
+
+    They keep the ports taken and, on Windows, files in the worktree open, so it can't be
+    removed. Kills each listener's whole process tree. Returns the pids stopped.
+    """
+    ports = {config.SLOT_API_PORT_BASE + slot, config.SLOT_WEB_PORT_BASE + slot}
+    listeners = {
+        c.pid
+        for c in psutil.net_connections(kind="inet")
+        if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port in ports and c.pid
+    }
+    stopped = []
+    for pid in listeners - {os.getpid()}:
+        try:
+            process = psutil.Process(pid)
+            tree = [*process.children(recursive=True), process]
+        except psutil.NoSuchProcess:
+            continue
+        for p in tree:
+            try:
+                p.kill()
+                stopped.append(p.pid)
+            except psutil.NoSuchProcess:
+                pass
+        psutil.wait_procs(tree, timeout=10)
+    return stopped
 
 
 def _git(*args: str):
