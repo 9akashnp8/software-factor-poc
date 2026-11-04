@@ -62,6 +62,18 @@ def test_login_shows_issues(client, ws):
     assert "BEI-1" in response.get_data(as_text=True)
 
 
+def test_attention_lists_only_issues_waiting_on_a_person(client, ws):
+    seed_issue(store.NEEDS_ATTENTION, "issue-2", "BEI-2", "Stuck", slot=2)
+    seed_issue(store.QUEUED, "issue-3", "BEI-3", "Waiting", slot=None)
+    assert client.get("/api/attention").status_code == 401
+    issues = client.get("/api/attention", headers=AUTH).get_json()["issues"]
+    assert {i["identifier"]: i["status"] for i in issues} == {
+        "BEI-1": store.PLAN_READY,
+        "BEI-2": store.NEEDS_ATTENTION,
+    }
+    assert issues[0]["url"].startswith("/issue/")
+
+
 def test_issue_context_strips_script(client, ws):
     page = client.get("/issue/issue-1/issue_context", headers=AUTH).get_data(as_text=True)
     assert "<script>" not in page

@@ -11,6 +11,7 @@
       <a class="sf-wordmark" href="{{ url_for('issue_home') }}"><span class="sf-wordmark-mark" aria-hidden="true"></span>Software Factory</a>
       {% block top %}{% endblock %}
       <a class="sf-top-note" href="{{ url_for('factory_metrics') }}">Metrics</a>
+      <button type="button" id="notify-toggle" class="sf-btn sf-btn-ghost sf-btn-sm" data-url="{{ url_for('attention') }}" aria-pressed="false">Enable notifications</button>
     </header>
     <main class="sf-page {% block page_class %}{% endblock %}">
       {% if paused_until %}
@@ -22,5 +23,6 @@
       {% block content %}
       {% endblock %}
     </main>
+    <script src="{{ url_for('static', filename='notifications.js') }}"></script>
   </body>
 </html>

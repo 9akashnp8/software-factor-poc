@@ -99,6 +99,24 @@ def issue_home():
         bug_label=config.LINEAR_BUG_LABEL,
     )
 
+@app.route("/api/attention")
+def attention():
+    # Issues waiting on a person; the page polls this to raise browser notifications
+    items = [
+        {
+            "key": f"{i['id']}:{i['status']}",
+            "status": i["status"],
+            "identifier": i["identifier"],
+            "title": i["title"],
+            "reason": i["needs_attention_reason"],
+            "url": url_for("issue_detail", issue_id=i["id"]),
+        }
+        for i in store.list_issues()
+        if i["status"] in (store.PLAN_READY, store.NEEDS_ATTENTION)
+    ]
+    return {"issues": items}
+
+
 METRIC_WINDOWS = (7, 30, 90)
 
 
