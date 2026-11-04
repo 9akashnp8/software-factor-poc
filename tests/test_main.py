@@ -597,6 +597,7 @@ def test_agents_get_a_headless_browser_saving_to_the_workspace(monkeypatch, pr_c
     assert config.PLAYWRIGHT_MCP in server["args"] and "--headless" in server["args"]
     assert str(ws / "evidence") in server["args"]
     monkeypatch.setattr(config, "PLAYWRIGHT_MCP", "")
+    monkeypatch.setattr(config, "LOKI_URL", "")
     assert main.mcp_servers(ws) == {}
 
 

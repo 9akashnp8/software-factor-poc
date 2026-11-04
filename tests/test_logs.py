@@ -40,8 +40,8 @@ def loki(monkeypatch):
     return requests, responses
 
 
-def stream(*lines, start=T0):
-    return [{"stream": {"service": "api"}, "values": [[str(start + i), line] for i, line in enumerate(lines)]}]
+def stream(*lines, start=T0, service="api"):
+    return [{"stream": {"service": service}, "values": [[str(start + i), line] for i, line in enumerate(lines)]}]
 
 
 def test_logql_filters():
@@ -58,16 +58,29 @@ def test_scrub_removes_personal_data_and_tokens():
     assert "Bearer <token>" in scrubbed and "<email>" in scrubbed
 
 
-def test_query_sorts_scrubs_and_authenticates(loki):
+def test_query_sorts_scrubs_labels_and_authenticates(loki):
     requests, responses = loki
-    responses['service="api"'] = [*stream("second jane@cpc.gov.ae", start=T0 + 5), *stream("first")]
+    responses['service="api"'] = [
+        *stream("second jane@cpc.gov.ae", start=T0 + 5, service="worker"),
+        *stream("first"),
+        {"stream": {}, "values": [[str(T0 + 9), "unlabelled"]]},
+    ]
     start, end = datetime(2026, 11, 2, 9, tzinfo=UTC), datetime(2026, 11, 2, 10, tzinfo=UTC)
     entries = anyio.run(logs.query, start, end, logs.logql())
-    assert [line for _, line in entries] == ["first", "second <email>"]
+    assert [line for _, line in entries] == ["[api] first", "[worker] second <email>", "unlabelled"]
     (request,) = requests
     assert request.url.path == "/loki/api/v1/query_range"
     assert request.url.params["start"] == str(int(start.timestamp() * 1e9))
     assert request.headers["Authorization"] == "Bearer tok"
+
+
+def test_query_through_grafanas_proxy_keeps_its_path(loki, monkeypatch):
+    requests, _ = loki
+    monkeypatch.setattr(config, "LOKI_URL", "https://grafana.test/api/datasources/proxy/uid/abc")
+    now = datetime.now(UTC)
+    anyio.run(logs.query, now, now, "q")
+    (request,) = requests
+    assert str(request.url).startswith("https://grafana.test/api/datasources/proxy/uid/abc/loki/api/v1/query_range?")
 
 
 def test_query_errors(loki, monkeypatch):
@@ -160,7 +173,7 @@ def test_loki_down_doesnt_stop_triage(monkeypatch, tmp_path):
     bug = {"id": "issue-1", "identifier": "BEI-1", "title": "t", "description": "d", "createdAt": "2026-11-02T10:00:00.000Z", "labels": {"nodes": []}}
     prompt = anyio.run(main.gather_context, bug, tmp_path)
     assert prompt and "<logs>" not in prompt
-    assert store.events("issue-1")[-1]["detail"] == "Couldn't fetch the api's logs: Loki unreachable: refused"
+    assert store.events("issue-1")[-1]["detail"] == "Couldn't fetch the app's logs: Loki unreachable: refused"
 
 
 def test_logs_command_saves_the_lines(loki, capsys):

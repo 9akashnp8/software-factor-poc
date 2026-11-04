@@ -74,8 +74,9 @@ target's `PROMPT_OVERRIDE_DIR` pointed at the worktree's `prompt-changes/`, so a
 is tried without touching Langfuse, and nothing is traced to Langfuse.
 
 Limits: ERP answers come from the target's fixtures with a made-up employee, so bugs that
-depend on one employee's real data won't reproduce; policy answers need the slot's
-database seeded (`just seed`); turns that answer an approval or a form can't be replayed.
+depend on one employee's real data won't reproduce; policy answers come from the sample
+policies seeded when the slot is set up; turns that answer an approval or a form can't be
+replayed.
 
 ### The browser
 
@@ -83,7 +84,9 @@ Planner and implementer get a headless Chrome through Playwright MCP
 (`SF_PLAYWRIGHT_MCP`, a pinned `@playwright/mcp`, run with `npx`). It needs Node and Google
 Chrome on the factory's machine; the first run downloads the package. Screenshots go to
 `evidence/` in the workspace. Agents sign in with the target's `AWP_TEST_*` test accounts,
-through the real identity provider. `SF_PLAYWRIGHT_MCP=` turns the browser off.
+through the real identity provider. Those accounts have no ERP record, so the slots'
+servers serve ERP answers from the target's fixtures (below). `SF_PLAYWRIGHT_MCP=` turns
+the browser off.
 
 ## Verifying before the PR
 
@@ -107,18 +110,25 @@ teardown.
 The PR description starts with a before/after table (test, replay, browser), and the plan
 page shows it with the screenshots.
 
-## API logs
+## Logs
 
-With `SF_LOKI_URL` set, triage fetches the api's logs from Loki into `logs/` in the
-workspace: for a chat bug, the failing turn's requests (found through the conversation id)
+With `SF_LOKI_URL` set, triage fetches the app's logs (the api, the Celery worker and
+beat) from Loki into `logs/` in the workspace: for a chat bug, the failing turn's requests (found through the conversation id)
 and the warnings and errors around it; for any other bug, the warnings and errors in the
 `SF_LOKI_WINDOW_MINUTES` before QA reported it. Agents search other windows with the
 factory's `query_logs` tool. It runs in the worker, so Loki's credentials (`LOKI_TOKEN`, or
 `LOKI_USER` and `LOKI_PASSWORD`) never reach an agent. Every line is scrubbed of emails,
-phone numbers and tokens. If Loki is down, triage goes on and the issue's history says so.
+phone numbers and tokens, and starts with the service that logged it (`[worker] …`). If
+Loki is down, triage goes on and the issue's history says so.
 
-`SF_LOKI_SELECTOR` picks the api's stream, in whatever labels your Loki gives the VM's
-compose logs. To check it by hand:
+`SF_LOKI_SELECTOR` picks the streams, in the labels the target's Alloy gives them (`env`,
+`project`, `service`, `level`). The default reads the api, worker and beat of the
+`agentic-app` project; add `env="…"` when other environments ship to the same Loki.
+
+`SF_LOKI_URL` is Loki's own address, or Grafana's proxy for its Loki data source,
+`https://<grafana>/api/datasources/proxy/uid/<uid>` (the uid is in the data source's
+URL in Grafana). Through Grafana, `LOKI_TOKEN` is a Grafana service account token with
+the Viewer role, and nothing else needs to reach Loki. To check it by hand:
 
 ```
 uv run software-factory logs BEI-12 --since 2026-11-02T09:00:00Z --errors-only
@@ -160,10 +170,26 @@ set of variables the target repo reads to run several worktrees at once (its
 database named after the issue (`app_bei_123`). With 14 slots, at most 14 issues can be
 between triage and merge at once; after that, new bugs wait in the queue.
 
-When it creates the worktree, the factory copies the target's `.env` into it and runs the
-target's `apps/api/local_init.py` with the slot's variables. That needs the local Postgres
-running with pgvector. If it fails, the issue needs attention and **Retry triage** runs it
-again.
+When it creates the worktree, the factory copies the target's `.env` into it and sets the
+slot up with the slot's variables, as the target's own commands would:
+
+1. `apps/api/local_init.py` (`just init-local`) creates the slot's database. It needs the
+   local Postgres running with pgvector.
+2. `alembic upgrade head` (`just migrate`) creates its tables.
+3. `apps/api/seed.py` (`just seed`) ingests the sample policies into it, for policy
+   questions. It needs MinIO and the embedding model the `.env` names.
+4. `npm ci` in `apps/web` installs the web app's packages, for the browser.
+
+If 1 or 2 fail, the issue needs attention and **Retry triage** runs them again. If 3 or 4
+fail, the issue's history says so and triage goes on: only policy replays and the browser
+need them. The worktree's `.env` comes from the target's main checkout, so the slot's
+servers use whatever Langfuse and model settings that file has.
+
+ERP is the exception: the slot's variables set `CPC_ERP_MOCK_ENABLED=true`, so its servers
+answer ERP calls from the target's captured fixtures, with the same made-up employee for
+any user, as replays do. The test accounts get a complete profile, and agents can't
+submit anything to the real ERP. Bugs that depend on one employee's real ERP data won't
+reproduce. `SF_SLOT_ERP_MOCK=0` uses the ERP the `.env` names instead.
 
 Agents get the slot's variables through `ClaudeAgentOptions.env`. The factory's own
 credentials (`LINEAR_API_KEY`, `AZURE_DEVOPS_PAT` and so on) are blanked in it.

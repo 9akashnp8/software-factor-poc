@@ -17,14 +17,18 @@ the factory works today is in `docs/running.md` and `docs/agent-permissions.md`.
       that sends a fixed JWT, which looks like a real person's, instead of `token`. Worktrees
       don't have it, but it's a secret in the working tree and anything run from that
       checkout calls ERP as that person.
-- [ ] **Ship the VM's api logs to Loki,** then set `SF_LOKI_URL`, `SF_LOKI_SELECTOR` and
-      the Loki credentials. The compose files have no `logging:` rotation either, so the
+- [ ] **Let the factory read Loki,** through Grafana (a service account token with the
+      Viewer role) or with network access to Loki, then set `SF_LOKI_URL`, `LOKI_TOKEN` and
+      `env` in `SF_LOKI_SELECTOR`. The logs are shipped (Alloy, 3 November).
+- [ ] **Log rotation on the VM.** The compose files have no `logging:` rotation, so the
       VM's Docker logs grow until the disk fills.
 - [ ] **Merge the prompt override hook in the target** (branch `feat/prompt-override-hook`):
       `PROMPT_OVERRIDE_DIR` in `agents/prompts.fetch_prompt`. Until it's on dev, replays
       and the browser check use Langfuse's prompts, not the worktree's `prompt-changes/`.
-- [ ] **Install Node and Chrome where the worker runs,** for the agents' browser
-      (`SF_PLAYWRIGHT_MCP`).
+- [ ] **A test employee in UAT ERP for the test account.** The `AWP_TEST_*` accounts have
+      no ERP record, so the slots serve ERP fixtures (`SF_SLOT_ERP_MOCK`). Bugs that
+      depend on real ERP data won't reproduce until the ERP team maps a test employee to
+      the test Keycloak account.
 
 ## Not built yet
 
@@ -58,7 +62,7 @@ the factory works today is in `docs/running.md` and `docs/agent-permissions.md`.
       PR and on the plan page, and Reproduced/Checked in the QA comment. Tested with fakes
       only; the first real chat bug and the first UI bug are the real tests. Check that
       replays work on a slot's database and that agents can sign in through the IdP headless.
-- [ ] **API logs and `query_logs`.** Tested against a fake Loki; waits on the logs being
+- [ ] **Logs and `query_logs`.** Tested against a fake Loki; waits on the logs being
       shipped.
 - [ ] **Metrics** (`/metrics`): the counts depend on event texts the pipeline writes; check
       them against a month of real history.

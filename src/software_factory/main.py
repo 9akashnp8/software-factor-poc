@@ -594,7 +594,7 @@ def implementation_options(issue, worktree: Path, **extra) -> ClaudeAgentOptions
 
 def mcp_servers(ws: Path) -> dict:
     """The tools agents get besides Claude Code's own, when configured: a headless browser,
-    and the factory's own tools (the api's logs), which run in this process."""
+    and the factory's own tools (the app's logs), which run in this process."""
     servers = {}
     if config.PLAYWRIGHT_MCP:
         # Screenshots land in the workspace, where the plan page and the PR evidence find them
@@ -636,7 +636,7 @@ def previous_attempt_section(ws: Path) -> str | None:
 
 
 async def prefetch_logs(bug_info: dict, ws: Path, replay: dict | None) -> str | None:
-    """Fetch the api's logs around the bug into the workspace; say where, for the prompt.
+    """Fetch the app's logs around the bug into the workspace; say where, for the prompt.
 
     A chat bug's failing turn gives the window; otherwise the time QA reported it does.
     Loki being down never stops triage: it's noted on the issue instead.
@@ -652,10 +652,11 @@ async def prefetch_logs(bug_info: dict, ws: Path, replay: dict | None) -> str | 
         else:
             return None
     except logs.LogsError as e:
-        store.add_event_once(bug_info["id"], f"Couldn't fetch the api's logs: {e}")
+        store.add_event_once(bug_info["id"], f"Couldn't fetch the app's logs: {e}")
         return None
     return (
-        f"The api's logs from Loki ({what}), scrubbed of personal data: {path} ({count} lines). "
+        f"The app's logs from Loki ({what}), scrubbed of personal data: {path} ({count} lines). "
+        "Each line starts with the service that logged it: [api], [worker] or [beat]. "
         "Search other windows with the query_logs tool."
     )
 

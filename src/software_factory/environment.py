@@ -48,6 +48,9 @@ def slot_env(slot: int, identifier: str) -> dict[str, str]:
         # uv's bundled certificates don't include the proxy's CA; the system store does
         "UV_SYSTEM_CERTS": os.environ.get("UV_SYSTEM_CERTS", "1"),
     }
+    if config.SLOT_ERP_MOCK:
+        # Overrides the worktree's .env, which pydantic-settings reads after the environment
+        env["CPC_ERP_MOCK_ENABLED"] = "true"
     # Agents inherit the factory's environment; options.env entries override it
     env.update({name: "" for name in config.FACTORY_SECRETS})
     return env
@@ -110,29 +113,50 @@ def fetch_base():
         _git("fetch", "origin", config.BASE_BRANCH)
 
 
-def provision(worktree: Path, env: dict[str, str]):
-    """Create the slot's database with the target repo's own provisioning script."""
+def _setup_step(step: str, args: list[str], cwd: Path, env: dict[str, str]):
+    try:
+        subprocess.run(args, cwd=cwd, env=env, check=True, capture_output=True, text=True, timeout=900)
+    except subprocess.CalledProcessError as e:
+        output = (e.stderr or e.stdout or "").strip()
+        raise ProvisioningError(f"{step} failed: {output[-1500:]}") from e
+    except subprocess.TimeoutExpired as e:
+        raise ProvisioningError(f"{step} timed out") from e
+
+
+def provision(worktree: Path, env: dict[str, str]) -> list[str]:
+    """Set the slot up as the target's own commands would: its database, migrated and
+    seeded, and the web app's packages.
+
+    The database and its migrations are needed for anything to run, so their failure is
+    raised. Seeding (policy questions) and the packages (the browser) are returned as
+    problems instead: the issue can go on without them.
+    """
     run_env = {**os.environ, **env}
     # The factory's virtualenv isn't the worktree's
     run_env.pop("VIRTUAL_ENV", None)
-    try:
-        # The target is a uv workspace: psycopg and the shared package belong to its
-        # members, which a plain `uv run` at the root doesn't install (its bootstrap
-        # runs `uv sync --all-packages`). This also gives the agent a complete .venv.
-        subprocess.run(
-            ["uv", "run", "--all-packages", "python", "apps/api/local_init.py"],
-            cwd=worktree,
-            env=run_env,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=900,
-        )
-    except subprocess.CalledProcessError as e:
-        output = (e.stderr or e.stdout or "").strip()
-        raise ProvisioningError(f"local_init.py failed: {output[-1500:]}") from e
-    except subprocess.TimeoutExpired as e:
-        raise ProvisioningError("local_init.py timed out") from e
+    # The target is a uv workspace: psycopg and the shared package belong to its members,
+    # which a plain `uv run` at the root doesn't install (its bootstrap runs
+    # `uv sync --all-packages`). This also gives the agent a complete .venv.
+    uv = ["uv", "run", "--all-packages"]
+    # `just init-local` and `just migrate`, with the slot's database name from env
+    _setup_step("local_init.py", [*uv, "python", "apps/api/local_init.py"], worktree, run_env)
+    _setup_step("Migrations", [*uv, "alembic", "upgrade", "head"], worktree / "apps" / "api", run_env)
+
+    problems = []
+    # `just seed`: the sample policies, ingested into the slot's own database
+    optional = [("Seeding the policy collection", [*uv, "python", "apps/api/seed.py"], worktree)]
+    # npm is a .cmd script on Windows; its full path lets subprocess start it
+    if npm := shutil.which("npm"):
+        args = [npm, "ci", "--no-audit", "--no-fund", "--prefer-offline"]
+        optional.append(("Installing the web app's packages", args, worktree / "apps" / "web"))
+    else:
+        problems.append("Installing the web app's packages failed: npm isn't installed")
+    for step, args, cwd in optional:
+        try:
+            _setup_step(step, args, cwd, run_env)
+        except ProvisioningError as e:
+            problems.append(str(e))
+    return problems
 
 
 def prepare_worktree(issue) -> Path:
@@ -152,7 +176,8 @@ def prepare_worktree(issue) -> Path:
         source_env = config.TARGET_REPO / ".env"
         if source_env.exists() and not (path / ".env").exists():
             shutil.copyfile(source_env, path / ".env")
-        provision(path, agent_env(issue))
+        for problem in provision(path, agent_env(issue)):
+            store.add_event(issue["id"], f"Slot setup: {problem}")
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(database_name(identifier), encoding="utf-8")
     return path

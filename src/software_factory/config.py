@@ -63,11 +63,14 @@ PLAYWRIGHT_MCP = os.getenv("SF_PLAYWRIGHT_MCP", "@playwright/mcp@0.0.83")
 # How long the factory's own run of the reproducing test may take before the PR
 VERIFY_TIMEOUT_SECONDS = _int("SF_VERIFY_TIMEOUT_SECONDS", 900)
 
-# Loki holding the target's api logs, for the agents' context; empty turns logs off. The
-# selector picks the api's stream in your Loki's labels. Credentials: LOKI_TOKEN (bearer),
-# or LOKI_USER and LOKI_PASSWORD (basic); LOKI_ORG_ID for a multi-tenant Loki.
+# Loki holding the target's logs, for the agents' context; empty turns logs off. Loki's own
+# address, or Grafana's proxy for its Loki data source
+# (https://grafana/api/datasources/proxy/uid/<uid>). The selector picks the app's streams
+# in the labels the target's Alloy gives them. Credentials: LOKI_TOKEN (bearer: Loki's, or
+# a Grafana service account's), or LOKI_USER and LOKI_PASSWORD (basic); LOKI_ORG_ID for a
+# multi-tenant Loki.
 LOKI_URL = os.getenv("SF_LOKI_URL", "").rstrip("/")
-LOKI_SELECTOR = os.getenv("SF_LOKI_SELECTOR", '{service="api"}')
+LOKI_SELECTOR = os.getenv("SF_LOKI_SELECTOR", '{project="agentic-app", service=~"api|worker|beat"}')
 # How far before QA's report triage looks for errors, for bugs without a conversation
 LOKI_WINDOW_MINUTES = _int("SF_LOKI_WINDOW_MINUTES", 30)
 
@@ -88,6 +91,10 @@ LINEAR_WRITEBACK = os.getenv("SF_LINEAR_WRITEBACK", "1") != "0"
 SLOT_COUNT = _int("SF_SLOT_COUNT", 14)
 SLOT_API_PORT_BASE = _int("SF_SLOT_API_PORT_BASE", 8100)
 SLOT_WEB_PORT_BASE = _int("SF_SLOT_WEB_PORT_BASE", 4300)
+# The slots' servers answer ERP calls from the target's captured fixtures, for any user:
+# the test accounts have no ERP record, and agents mustn't act in the real ERP. 0 uses
+# whatever ERP the target's .env names.
+SLOT_ERP_MOCK = os.getenv("SF_SLOT_ERP_MOCK", "1") != "0"
 
 # The factory's own credentials. Agents inherit the factory's environment, so these are
 # blanked in every agent's env.
