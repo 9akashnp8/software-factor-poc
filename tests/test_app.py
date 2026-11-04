@@ -254,11 +254,12 @@ def test_posting_the_qa_question_comments_on_linear(client, ws, monkeypatch):
 
     async def fake_comment(issue_id, body):
         posted.append((issue_id, body))
+        return "Priya"
 
     async def fake_add_label(issue_id, name):
         posted.append((issue_id, f"label {name}"))
 
-    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    monkeypatch.setattr(web.linear, "comment_to_reporter", fake_comment)
     monkeypatch.setattr(web.linear, "add_label", fake_add_label)
     token = csrf_token(client)
     response = client.post(
@@ -283,7 +284,7 @@ def test_a_follow_up_qa_question_is_recorded_without_moving_the_issue(client, ws
     async def fake_linear(issue_id, text):
         pass
 
-    monkeypatch.setattr(web.linear, "comment", fake_linear)
+    monkeypatch.setattr(web.linear, "comment_to_reporter", fake_linear)
     monkeypatch.setattr(web.linear, "add_label", fake_linear)
     client.post("/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "And which day?"})
     assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
@@ -298,6 +299,25 @@ def test_sending_qa_s_answer_reworks_the_plan(client, ws):
     assert (issue["status"], issue["pending_feedback"]) == (store.REWORK_QUEUED, "It was 3 March")
 
 
+def test_an_issue_without_a_reporter_is_posted_without_a_mention(client, ws, monkeypatch):
+    not_reproduced(ws)
+    monkeypatch.setattr(web.config, "LINEAR_WRITEBACK", True)
+
+    async def no_reporter(issue_id, body):
+        return None
+
+    async def fake_add_label(issue_id, name):
+        pass
+
+    monkeypatch.setattr(web.linear, "comment_to_reporter", no_reporter)
+    monkeypatch.setattr(web.linear, "add_label", fake_add_label)
+    response = client.post(
+        "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "Which day?"}, follow_redirects=True
+    )
+    page = response.get_data(as_text=True)
+    assert "Question posted to Linear" in page and "no reporter to mention" in page
+
+
 def test_a_missing_label_is_reported_and_the_question_still_counts(client, ws, monkeypatch):
     not_reproduced(ws)
     monkeypatch.setattr(web.config, "LINEAR_WRITEBACK", True)
@@ -308,7 +328,7 @@ def test_a_missing_label_is_reported_and_the_question_still_counts(client, ws, m
     async def no_label(issue_id, name):
         raise web.linear.LinearError(f"There's no {name!r} label")
 
-    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    monkeypatch.setattr(web.linear, "comment_to_reporter", fake_comment)
     monkeypatch.setattr(web.linear, "add_label", no_label)
     response = client.post(
         "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "Which day?"}, follow_redirects=True
@@ -326,7 +346,7 @@ def test_qa_question_isnt_posted_while_writeback_is_off(client, ws, monkeypatch)
     async def fake_comment(issue_id, body):
         posted.append(body)
 
-    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    monkeypatch.setattr(web.linear, "comment_to_reporter", fake_comment)
     token = csrf_token(client)
     response = client.post(
         "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": token, "question": "Which day?"}, follow_redirects=True

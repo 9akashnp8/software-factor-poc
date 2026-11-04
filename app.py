@@ -261,11 +261,13 @@ def post_qa_question(issue_id: str):
         flash("Posting to Linear is off (SF_LINEAR_WRITEBACK=0).")
     else:
         try:
-            asyncio.run(linear.comment(issue_id, question))
+            reporter = asyncio.run(linear.comment_to_reporter(issue_id, question))
         except (linear.LinearError, httpx.HTTPError) as e:
             flash(f"Couldn't post the question to Linear: {e}")
         else:
             actor = request.authorization.username
+            if reporter is None:
+                flash("The Linear issue has no reporter to mention, so the question went without one.")
             # Off the review count, so new bugs aren't held up while QA answers. A follow-up
             # question, posted while already waiting, is only recorded.
             if not store.transition(

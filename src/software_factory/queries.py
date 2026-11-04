@@ -80,6 +80,19 @@ mutation SetIssueState($id: String!, $stateId: String!) {
 }
 """
 
+# Who reported the issue; null when an integration created it. Linear turns a profile url
+# in a comment into a mention, which notifies them.
+ISSUE_CREATOR_QUERY = """
+query IssueCreator($id: String!) {
+  issue(id: $id) {
+    creator {
+      displayName
+      url
+    }
+  }
+}
+"""
+
 COMMENT_MUTATION = """
 mutation CommentOnIssue($id: String!, $body: String!) {
   commentCreate(input: { issueId: $id, body: $body }) {

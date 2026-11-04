@@ -125,7 +125,7 @@
             <div class="sf-field">
                 <label class="sf-field-label" for="question">The planner couldn't reproduce the bug. Edit its question, then post it on the Linear issue.</label>
                 <div class="sf-input is-multiline"><textarea id="question" class="sf-input-control" name="question" rows="4" required>{{ repro.qa_question }}</textarea></div>
-                <p class="sf-field-hint">{% if linear_writeback %}Posted as a comment, as the factory's Linear user, with the {{ clarification_label }} label. When QA answers, send the answer as rework.{% else %}Posting is off while SF_LINEAR_WRITEBACK=0.{% endif %}</p>
+                <p class="sf-field-hint">{% if linear_writeback %}Posted as a comment, as the factory's Linear user, mentioning whoever reported the issue, with the {{ clarification_label }} label. When QA answers, send the answer as rework.{% else %}Posting is off while SF_LINEAR_WRITEBACK=0.{% endif %}</p>
             </div>
             <div class="sf-decision-actions">
                 <button type="submit" class="sf-btn sf-btn-primary"{% if not linear_writeback %} disabled{% endif %}>{{ ui.icon("external", 14) }}<span>Post to Linear</span></button>

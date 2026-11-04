@@ -58,6 +58,28 @@ def test_set_state_looks_up_the_team_state_then_updates(monkeypatch):
     assert sent[1]["variables"] == {"id": "issue-1", "stateId": "s-prog"}
 
 
+def creator_handler(creator):
+    def handler(request):
+        if "commentCreate" in json.loads(request.content)["query"]:
+            return httpx.Response(200, json={"data": {"commentCreate": {"success": True}}})
+        return httpx.Response(200, json={"data": {"issue": {"creator": creator}}})
+
+    return handler
+
+
+def test_comment_to_reporter_mentions_them_by_profile_url(monkeypatch):
+    creator = {"displayName": "priya", "url": "https://linear.app/beinex/profiles/priya"}
+    sent = mock_linear(monkeypatch, creator_handler(creator))
+    assert anyio.run(linear.comment_to_reporter, "issue-1", "Which day?") == "priya"
+    assert sent[1]["variables"] == {"id": "issue-1", "body": "https://linear.app/beinex/profiles/priya Which day?"}
+
+
+def test_comment_to_reporter_without_a_creator_posts_the_question_as_is(monkeypatch):
+    sent = mock_linear(monkeypatch, creator_handler(None))
+    assert anyio.run(linear.comment_to_reporter, "issue-1", "Which day?") is None
+    assert sent[1]["variables"]["body"] == "Which day?"
+
+
 def labels_handler(nodes):
     def handler(request):
         if "issueAddLabel" in json.loads(request.content)["query"]:
