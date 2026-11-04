@@ -87,3 +87,31 @@ mutation CommentOnIssue($id: String!, $body: String!) {
   }
 }
 """
+
+# Team labels and workspace labels (team null) share names; the caller prefers the team's
+LABELS_BY_NAME_QUERY = """
+query IssueLabelsByName($id: String!, $name: String!) {
+  issue(id: $id) {
+    team {
+      id
+    }
+  }
+  issueLabels(filter: { name: { eq: $name } }) {
+    nodes {
+      id
+      team {
+        id
+      }
+    }
+  }
+}
+"""
+
+# Adds one label and keeps the rest; issueUpdate's labelIds would replace them all
+ADD_LABEL_MUTATION = """
+mutation AddIssueLabel($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+"""

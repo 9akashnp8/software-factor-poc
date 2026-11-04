@@ -158,6 +158,7 @@ def issue_detail(issue_id):
         replay_missing=plan is not None and (ws / "conversation.json").exists()
         and (repro is None or repro.get("method") != "replay"),
         linear_writeback=config.LINEAR_WRITEBACK,
+        clarification_label=config.LINEAR_CLARIFICATION_LABEL,
         base_branch=config.BASE_BRANCH,
     )
 
@@ -272,6 +273,15 @@ def post_qa_question(issue_id: str):
             ):
                 store.add_event(issue_id, metrics.QA_QUESTION, actor=actor)
             flash("Question posted to Linear. When QA answers, send the answer as rework.")
+            # The question is already posted, so a missing label is reported, not fatal
+            label = config.LINEAR_CLARIFICATION_LABEL
+            try:
+                asyncio.run(linear.add_label(issue_id, label))
+            except (linear.LinearError, httpx.HTTPError) as e:
+                store.add_event(issue_id, f"Couldn't add the Linear label {label}: {e}", actor=actor)
+                flash(f"Couldn't add the {label!r} label in Linear: {e}")
+            else:
+                store.add_event(issue_id, f"Linear label {label} added", actor=actor)
     return redirect(url_for("issue_detail", issue_id=issue_id))
 
 

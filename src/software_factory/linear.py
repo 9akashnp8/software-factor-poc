@@ -4,10 +4,12 @@ import httpx
 
 from software_factory import config, store
 from software_factory.queries import (
+    ADD_LABEL_MUTATION,
     COMMENT_MUTATION,
     ISSUE_BY_LABEL_QUERY,
     ISSUE_DETAIL_QUERY,
     ISSUE_STATES_QUERY,
+    LABELS_BY_NAME_QUERY,
     SET_STATE_MUTATION,
 )
 from software_factory.utils import ssl_context
@@ -74,6 +76,23 @@ async def set_state(issue_id: str, state_name: str):
         data = await linear_query(client, SET_STATE_MUTATION, {"id": issue_id, "stateId": states[state_name]})
     if not data["issueUpdate"]["success"]:
         raise LinearError(f"Linear refused the move to {state_name!r}")
+
+
+async def add_label(issue_id: str, label_name: str):
+    """Add the label named label_name to the issue, keeping its other labels.
+
+    The issue's team label wins over a workspace label of the same name.
+    """
+    async with linear_client() as client:
+        data = await linear_query(client, LABELS_BY_NAME_QUERY, {"id": issue_id, "name": label_name})
+        team_id = data["issue"]["team"]["id"]
+        labels = [n for n in data["issueLabels"]["nodes"] if n["team"] is None or n["team"]["id"] == team_id]
+        if not labels:
+            raise LinearError(f"There's no {label_name!r} label for the issue's team or the workspace")
+        label = next((n for n in labels if n["team"] is not None), labels[0])
+        data = await linear_query(client, ADD_LABEL_MUTATION, {"id": issue_id, "labelId": label["id"]})
+    if not data["issueAddLabel"]["success"]:
+        raise LinearError(f"Linear refused the {label_name!r} label")
 
 
 async def report_state(issue_id: str, state_name: str):

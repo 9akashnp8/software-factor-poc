@@ -85,6 +85,8 @@ LINEAR_PENDING_DEPLOY_STATE = os.getenv("SF_LINEAR_PENDING_DEPLOY_STATE", "Pendi
 # Set once the fix is deployed (or at merge, without a deploy pipeline), with a comment for QA
 LINEAR_MERGED_STATE = os.getenv("SF_LINEAR_MERGED_STATE", "In Review")
 LINEAR_WRITEBACK = os.getenv("SF_LINEAR_WRITEBACK", "1") != "0"
+# Added to the Linear issue with the question for QA, when a bug didn't reproduce
+LINEAR_CLARIFICATION_LABEL = os.getenv("SF_LINEAR_CLARIFICATION_LABEL", "Need Clarification")
 
 # Slot n gets API 8100+n, web 4300+n and Redis DB n+1. Redis has 16 DBs and the target
 # uses 0 (Langfuse) and 1 (the main checkout's queue), which leaves 14 slots.

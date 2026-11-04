@@ -58,6 +58,36 @@ def test_set_state_looks_up_the_team_state_then_updates(monkeypatch):
     assert sent[1]["variables"] == {"id": "issue-1", "stateId": "s-prog"}
 
 
+def labels_handler(nodes):
+    def handler(request):
+        if "issueAddLabel" in json.loads(request.content)["query"]:
+            return httpx.Response(200, json={"data": {"issueAddLabel": {"success": True}}})
+        return httpx.Response(200, json={"data": {"issue": {"team": {"id": "t1"}}, "issueLabels": {"nodes": nodes}}})
+
+    return handler
+
+
+def test_add_label_prefers_the_team_label_over_the_workspace_one(monkeypatch):
+    nodes = [{"id": "l-ws", "team": None}, {"id": "l-other", "team": {"id": "t2"}}, {"id": "l-team", "team": {"id": "t1"}}]
+    sent = mock_linear(monkeypatch, labels_handler(nodes))
+    anyio.run(linear.add_label, "issue-1", "Need Clarification")
+    assert sent[0]["variables"] == {"id": "issue-1", "name": "Need Clarification"}
+    assert sent[1]["variables"] == {"id": "issue-1", "labelId": "l-team"}
+
+
+def test_add_label_falls_back_to_the_workspace_label(monkeypatch):
+    sent = mock_linear(monkeypatch, labels_handler([{"id": "l-ws", "team": None}]))
+    anyio.run(linear.add_label, "issue-1", "Need Clarification")
+    assert sent[1]["variables"]["labelId"] == "l-ws"
+
+
+def test_add_label_raises_when_no_label_fits(monkeypatch):
+    sent = mock_linear(monkeypatch, labels_handler([{"id": "l-other", "team": {"id": "t2"}}]))
+    with pytest.raises(linear.LinearError, match="no 'Need Clarification' label"):
+        anyio.run(linear.add_label, "issue-1", "Need Clarification")
+    assert len(sent) == 1
+
+
 def test_unknown_state_is_recorded_not_raised(monkeypatch):
     seed_issue(store.GATHERING_CONTEXT)
     monkeypatch.setattr(config, "LINEAR_WRITEBACK", True)

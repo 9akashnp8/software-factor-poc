@@ -255,15 +255,19 @@ def test_posting_the_qa_question_comments_on_linear(client, ws, monkeypatch):
     async def fake_comment(issue_id, body):
         posted.append((issue_id, body))
 
+    async def fake_add_label(issue_id, name):
+        posted.append((issue_id, f"label {name}"))
+
     monkeypatch.setattr(web.linear, "comment", fake_comment)
+    monkeypatch.setattr(web.linear, "add_label", fake_add_label)
     token = csrf_token(client)
     response = client.post(
         "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": token, "question": "Which day?"}, follow_redirects=True
     )
-    assert posted == [("issue-1", "Which day?")]
+    assert posted == [("issue-1", "Which day?"), ("issue-1", "label Need Clarification")]
     assert "Question posted to Linear" in response.get_data(as_text=True)
-    assert store.events("issue-1")[-1]["detail"] == "QA question posted to Linear"
-    assert store.events("issue-1")[-1]["actor"] == "akash"
+    details = [(e["detail"], e["actor"]) for e in store.events("issue-1")[-2:]]
+    assert details == [("QA question posted to Linear", "akash"), ("Linear label Need Clarification added", "akash")]
     # Waiting on QA frees its plan-review place
     assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
     assert store.plans_in_review() == 0
@@ -276,13 +280,14 @@ def test_a_follow_up_qa_question_is_recorded_without_moving_the_issue(client, ws
     store.transition("issue-1", store.AWAITING_QA)
     monkeypatch.setattr(web.config, "LINEAR_WRITEBACK", True)
 
-    async def fake_comment(issue_id, body):
+    async def fake_linear(issue_id, text):
         pass
 
-    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    monkeypatch.setattr(web.linear, "comment", fake_linear)
+    monkeypatch.setattr(web.linear, "add_label", fake_linear)
     client.post("/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "And which day?"})
     assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
-    assert store.events("issue-1")[-1]["detail"] == "QA question posted to Linear"
+    assert store.events("issue-1")[-2]["detail"] == "QA question posted to Linear"
 
 
 def test_sending_qa_s_answer_reworks_the_plan(client, ws):
@@ -291,6 +296,27 @@ def test_sending_qa_s_answer_reworks_the_plan(client, ws):
     client.post("/issue/issue-1/rework-plan", headers=AUTH, data={"csrf_token": csrf_token(client), "feedback": "It was 3 March"})
     issue = store.get_issue("issue-1")
     assert (issue["status"], issue["pending_feedback"]) == (store.REWORK_QUEUED, "It was 3 March")
+
+
+def test_a_missing_label_is_reported_and_the_question_still_counts(client, ws, monkeypatch):
+    not_reproduced(ws)
+    monkeypatch.setattr(web.config, "LINEAR_WRITEBACK", True)
+
+    async def fake_comment(issue_id, body):
+        pass
+
+    async def no_label(issue_id, name):
+        raise web.linear.LinearError(f"There's no {name!r} label")
+
+    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    monkeypatch.setattr(web.linear, "add_label", no_label)
+    response = client.post(
+        "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "Which day?"}, follow_redirects=True
+    )
+    page = response.get_data(as_text=True)
+    assert "Question posted to Linear" in page and "Couldn&#39;t add the &#39;Need Clarification&#39; label" in page
+    assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
+    assert "Couldn't add the Linear label" in store.events("issue-1")[-1]["detail"]
 
 
 def test_qa_question_isnt_posted_while_writeback_is_off(client, ws, monkeypatch):
