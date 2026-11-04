@@ -13,7 +13,7 @@ PATH_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)+[\w-]+\.\w+")
 WITH_COMMITS = frozenset({store.IMPLEMENTING, store.WORK_COMPLETED, store.PR_OPENED, store.UPDATE_QUEUED, store.UPDATING})
 # Issues with a plan but no commits yet
 WITH_PLAN_ONLY = frozenset(
-    {store.PLAN_READY, store.IMPLEMENT_QUEUED, store.REWORK_QUEUED, store.REWORKING, store.REFRESH_QUEUED, store.REFRESHING}
+    {store.PLAN_READY, store.AWAITING_QA, store.IMPLEMENT_QUEUED, store.REWORK_QUEUED, store.REWORKING, store.REFRESH_QUEUED, store.REFRESHING}
 )
 
 

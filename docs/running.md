@@ -19,6 +19,7 @@ Work a person is waiting on goes first:
 3. Opened PRs that need an update (see below), and issues you released.
 4. New bugs to triage, oldest first. A new bug also needs a free slot, and waits while
    `SF_MAX_PLANS_IN_REVIEW` (3) plans are being written, reworked or waiting for your review.
+   A plan waiting on QA's answer to its question doesn't count.
 
 Every `SF_INGEST_SECONDS` it queues Todo bugs labelled Bug that it hasn't seen before, and
 finished ones (merged or released) that QA moved back to Todo. Every `SF_MERGE_POLL_SECONDS`
@@ -55,8 +56,9 @@ replay gets a "Not replayed" warning.
 
 A bug that **didn't reproduce** gets findings instead of a fix plan, and a draft question
 for QA. Approve is hidden. Edit the question and **Post to Linear** comments on the issue
-(nothing is posted on its own). When QA answers, send the answer as rework: the planner
-tries again and updates `reproduction.json`.
+(nothing is posted on its own). Posting moves the issue to *awaiting QA*, which doesn't count
+toward `SF_MAX_PLANS_IN_REVIEW`, so new bugs keep being triaged while QA answers. When QA
+answers, send the answer as rework: the planner tries again and updates `reproduction.json`.
 
 ### Replaying a chat turn
 

@@ -13,6 +13,7 @@ from software_factory import config, store
 STATUS_LOOK = {
     store.NEEDS_ATTENTION: ("attn", "needs attention", "you"),
     store.PLAN_READY: ("review", "plan ready", "you"),
+    store.AWAITING_QA: ("review", "awaiting QA", "you"),
     store.GATHERING_CONTEXT: ("run", "gathering context", "run"),
     store.PLANNING: ("run", "planning", "run"),
     store.REWORK_QUEUED: ("run", "rework queued", "run"),
@@ -59,6 +60,7 @@ AGENT_RUNNING = frozenset(
 NEXT_STEP = {
     store.NEEDS_ATTENTION: "Open",
     store.PLAN_READY: "Review plan",
+    store.AWAITING_QA: "Send QA's answer",
 }
 
 # (key, name, hint, rows kept visible before "show more", None = all)
@@ -96,6 +98,7 @@ FLOW = {
     store.GATHERING_CONTEXT: ("analyzing", "todo"),
     store.PLANNING: ("analyzing", "todo"),
     store.PLAN_READY: ("plan", "todo"),
+    store.AWAITING_QA: ("plan", "todo"),
     store.REWORK_QUEUED: ("analyzing", "todo"),
     store.REWORKING: ("analyzing", "todo"),
     store.REFRESH_QUEUED: ("analyzing", "todo"),

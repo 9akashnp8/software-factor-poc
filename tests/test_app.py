@@ -264,6 +264,33 @@ def test_posting_the_qa_question_comments_on_linear(client, ws, monkeypatch):
     assert "Question posted to Linear" in response.get_data(as_text=True)
     assert store.events("issue-1")[-1]["detail"] == "QA question posted to Linear"
     assert store.events("issue-1")[-1]["actor"] == "akash"
+    # Waiting on QA frees its plan-review place
+    assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
+    assert store.plans_in_review() == 0
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Waiting on QA" in page and "Post to Linear" not in page and "Request rework" in page
+
+
+def test_a_follow_up_qa_question_is_recorded_without_moving_the_issue(client, ws, monkeypatch):
+    not_reproduced(ws)
+    store.transition("issue-1", store.AWAITING_QA)
+    monkeypatch.setattr(web.config, "LINEAR_WRITEBACK", True)
+
+    async def fake_comment(issue_id, body):
+        pass
+
+    monkeypatch.setattr(web.linear, "comment", fake_comment)
+    client.post("/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "And which day?"})
+    assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
+    assert store.events("issue-1")[-1]["detail"] == "QA question posted to Linear"
+
+
+def test_sending_qa_s_answer_reworks_the_plan(client, ws):
+    not_reproduced(ws)
+    store.transition("issue-1", store.AWAITING_QA)
+    client.post("/issue/issue-1/rework-plan", headers=AUTH, data={"csrf_token": csrf_token(client), "feedback": "It was 3 March"})
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["pending_feedback"]) == (store.REWORK_QUEUED, "It was 3 March")
 
 
 def test_qa_question_isnt_posted_while_writeback_is_off(client, ws, monkeypatch):

@@ -264,7 +264,13 @@ def post_qa_question(issue_id: str):
         except (linear.LinearError, httpx.HTTPError) as e:
             flash(f"Couldn't post the question to Linear: {e}")
         else:
-            store.add_event(issue_id, "QA question posted to Linear", actor=request.authorization.username)
+            actor = request.authorization.username
+            # Off the review count, so new bugs aren't held up while QA answers. A follow-up
+            # question, posted while already waiting, is only recorded.
+            if not store.transition(
+                issue_id, store.AWAITING_QA, expected={store.PLAN_READY}, actor=actor, reason=metrics.QA_QUESTION
+            ):
+                store.add_event(issue_id, metrics.QA_QUESTION, actor=actor)
             flash("Question posted to Linear. When QA answers, send the answer as rework.")
     return redirect(url_for("issue_detail", issue_id=issue_id))
 

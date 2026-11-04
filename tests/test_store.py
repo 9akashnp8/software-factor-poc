@@ -194,6 +194,23 @@ def test_triage_waits_while_review_is_full(monkeypatch):
     assert store.plans_in_review() == 2
 
 
+def test_a_plan_waiting_on_qa_doesnt_hold_up_triage(monkeypatch):
+    monkeypatch.setattr(config, "MAX_PLANS_IN_REVIEW", 1)
+    seed_issue(store.AWAITING_QA, issue_id="q1", identifier="BEI-1", slot=1, reproduction="not_reproduced")
+    store.enqueue_new("t1", "BEI-2")
+    assert store.plans_in_review() == 0
+    assert store.claim_next() == ("t1", "triage")
+    # QA's answer goes back as rework, which counts again
+    assert store.transition("q1", store.REWORK_QUEUED, expected=store.ACTIONS["rework"])
+    assert store.plans_in_review() == 2
+
+
+def test_a_plan_waiting_on_qa_can_be_reworked_or_released():
+    ws = seed_issue(store.AWAITING_QA, reproduction="not_reproduced")
+    (ws / "plan.md").write_text("# Findings")
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["rework", "release"]
+
+
 def test_open_pr_is_offered_once_the_implementation_reported():
     ws = seed_issue(store.NEEDS_ATTENTION)
     (ws / "plan.md").write_text("# Plan")
