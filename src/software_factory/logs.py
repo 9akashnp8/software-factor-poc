@@ -1,9 +1,10 @@
-"""The target's api logs from Loki, as context for the agents.
+"""The target's logs from Loki (the api, the Celery worker and beat), as context for
+the agents.
 
 Triage fetches the window around the bug into the workspace's logs/; agents ask for other
 windows through the factory's query_logs tool, which runs here in the factory's process,
-so Loki's credentials never reach them. Every line is scrubbed of emails, phone numbers
-and tokens before it's written or returned.
+so Loki's credentials never reach them. Every line starts with the service that logged
+it, and is scrubbed of emails, phone numbers and tokens before it's written or returned.
 """
 
 import json
@@ -47,7 +48,7 @@ def scrub(line: str) -> str:
 
 
 def logql(contains: str | None = None, errors_only: bool = False, matching: str | None = None) -> str:
-    """The query for the api's stream: lines containing a text, matching a regex, or errors."""
+    """The query for the app's streams: lines containing a text, matching a regex, or errors."""
     query = config.LOKI_SELECTOR
     if contains:
         # JSON string escaping is what LogQL's double-quoted strings take
@@ -77,7 +78,7 @@ def _ns(moment: datetime) -> str:
 
 
 async def query(start: datetime, end: datetime, logql_query: str, limit: int = LINE_LIMIT) -> list[tuple[str, str]]:
-    """(time, line) pairs between start and end, oldest first, scrubbed."""
+    """(time, "[service] line") pairs between start and end, oldest first, scrubbed."""
     if not enabled():
         raise LogsError("Loki isn't configured (SF_LOKI_URL)")
     params = {"query": logql_query, "start": _ns(start), "end": _ns(end), "limit": limit, "direction": "forward"}
@@ -89,7 +90,7 @@ async def query(start: datetime, end: datetime, logql_query: str, limit: int = L
     if response.status_code != 200:
         raise LogsError(f"Loki answered {response.status_code}: {response.text[:300]}")
     entries = [
-        (int(ns), line)
+        (int(ns), _labelled(stream.get("stream", {}), line))
         for stream in response.json()["data"]["result"]
         for ns, line in stream["values"]
     ]
@@ -97,6 +98,12 @@ async def query(start: datetime, end: datetime, logql_query: str, limit: int = L
         (datetime.fromtimestamp(ns / 1e9, UTC).isoformat(timespec="milliseconds"), scrub(line))
         for ns, line in sorted(entries)
     ]
+
+
+def _labelled(labels: dict, line: str) -> str:
+    """The line with the service that logged it in front: one query reads several."""
+    service = labels.get("service")
+    return f"[{service}] {line}" if service else line
 
 
 def write(ws: Path, name: str, entries: list[tuple[str, str]]) -> Path:
@@ -140,9 +147,11 @@ def query_logs_tool(ws: Path):
 
     @tool(
         "query_logs",
-        "Search the target's api logs in Loki (scrubbed of personal data). Times are ISO 8601 "
-        "in UTC. contains filters to lines with that text (a conversation or request id, say); "
-        "errors_only keeps warnings and errors. The lines are also saved to the issue's logs/.",
+        "Search the target's logs in Loki: the api, the Celery worker and beat, each line "
+        "starting with its service, e.g. [worker]. Scrubbed of personal data. Times are ISO "
+        "8601 in UTC. contains filters to lines with that text (a conversation or request "
+        "id, a task name); errors_only keeps warnings and errors. The lines are also saved "
+        "to the issue's logs/.",
         {
             "type": "object",
             "properties": {

@@ -149,7 +149,7 @@ def reset_command(args) -> int:
 
 
 def logs_command(args) -> int:
-    """Fetch an issue's api logs from Loki into its workspace, as triage and agents would."""
+    """Fetch an issue's app logs from Loki into its workspace, as triage and agents would."""
     issue = store.find_issue(args.issue)
     if issue is None:
         print(f"No issue {args.issue}.")
@@ -189,7 +189,7 @@ def main() -> None:
     reset_parser.add_argument("--yes", action="store_true", help="Don't ask before resetting everything")
     logs_parser = commands.add_parser(
         "logs",
-        help="Fetch an issue's api logs from Loki into its workspace",
+        help="Fetch an issue's app logs from Loki into its workspace",
         description="Query Loki as the agents' query_logs tool does, and save the scrubbed lines.",
     )
     logs_parser.add_argument("issue", help="The issue's identifier, e.g. BEI-12")

@@ -39,7 +39,12 @@ def target(tmp_path: Path, monkeypatch) -> Path:
 @pytest.fixture
 def provisioned(monkeypatch) -> list:
     calls = []
-    monkeypatch.setattr(environment, "provision", lambda worktree, env: calls.append((worktree, env)))
+
+    def provision(worktree, env):
+        calls.append((worktree, env))
+        return []
+
+    monkeypatch.setattr(environment, "provision", provision)
     return calls
 
 
@@ -58,6 +63,12 @@ def test_slot_env_blanks_the_factory_secrets(monkeypatch):
     monkeypatch.setenv("AZURE_DEVOPS_PAT", "secret")
     env = environment.slot_env(1, "BEI-1")
     assert all(env[name] == "" for name in config.FACTORY_SECRETS)
+
+
+def test_slot_env_serves_erp_fixtures_unless_turned_off(monkeypatch):
+    assert environment.slot_env(1, "BEI-1")["CPC_ERP_MOCK_ENABLED"] == "true"
+    monkeypatch.setattr(config, "SLOT_ERP_MOCK", False)
+    assert "CPC_ERP_MOCK_ENABLED" not in environment.slot_env(1, "BEI-1")
 
 
 def test_agent_env_points_at_the_workspace():
@@ -102,10 +113,39 @@ def test_failed_provisioning_is_retried_next_time(target, monkeypatch):
     with pytest.raises(environment.ProvisioningError):
         environment.prepare_worktree(issue)
 
-    calls = []
-    monkeypatch.setattr(environment, "provision", lambda worktree, env: calls.append(worktree))
+    monkeypatch.setattr(environment, "provision", lambda worktree, env: ["Seeding the policy collection failed: no MinIO"])
     environment.prepare_worktree(issue)
-    assert calls == [config.WORKTREE_DIR / "BEI-1"]
+    assert store.events("issue-1")[-1]["detail"] == "Slot setup: Seeding the policy collection failed: no MinIO"
+
+
+def test_provision_creates_migrates_seeds_and_installs(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd, **kwargs):
+        calls.append((args[1:] if args[0].endswith(("npm", "npm.cmd")) else args, cwd))
+        if args[-1] == "apps/api/seed.py":
+            raise subprocess.CalledProcessError(1, args, stderr="MinIO unreachable")
+
+    monkeypatch.setattr(environment.shutil, "which", lambda name: "C:/node/npm.cmd")
+    monkeypatch.setattr(environment.subprocess, "run", fake_run)
+    problems = environment.provision(tmp_path, environment.slot_env(1, "BEI-1"))
+    uv = ["uv", "run", "--all-packages"]
+    assert calls == [
+        ([*uv, "python", "apps/api/local_init.py"], tmp_path),
+        ([*uv, "alembic", "upgrade", "head"], tmp_path / "apps" / "api"),
+        ([*uv, "python", "apps/api/seed.py"], tmp_path),
+        (["ci", "--no-audit", "--no-fund", "--prefer-offline"], tmp_path / "apps" / "web"),
+    ]
+    # Seeding and the packages don't stop the issue; the database does
+    assert problems == ["Seeding the policy collection failed: MinIO unreachable"]
+
+
+def test_provision_without_npm_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(environment.shutil, "which", lambda name: None)
+    monkeypatch.setattr(environment.subprocess, "run", lambda *a, **k: None)
+    assert environment.provision(tmp_path, environment.slot_env(1, "BEI-1")) == [
+        "Installing the web app's packages failed: npm isn't installed"
+    ]
 
 
 def test_provision_reports_the_script_error(tmp_path, monkeypatch):
@@ -119,7 +159,7 @@ def test_provision_reports_the_script_error(tmp_path, monkeypatch):
 
     monkeypatch.setenv("VIRTUAL_ENV", "/factory/.venv")
     monkeypatch.setattr(environment.subprocess, "run", fake_run)
-    with pytest.raises(environment.ProvisioningError, match="pgvector is not installed"):
+    with pytest.raises(environment.ProvisioningError, match="local_init.py failed: pgvector is not installed"):
         environment.provision(tmp_path, environment.slot_env(1, "BEI-1"))
 
 
