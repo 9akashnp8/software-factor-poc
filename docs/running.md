@@ -19,6 +19,7 @@ Work a person is waiting on goes first:
 3. Opened PRs that need an update (see below), and issues you released.
 4. New bugs to triage, oldest first. A new bug also needs a free slot, and waits while
    `SF_MAX_PLANS_IN_REVIEW` (3) plans are being written, reworked or waiting for your review.
+   A plan waiting on QA's answer to its question doesn't count.
 
 Every `SF_INGEST_SECONDS` it queues Todo bugs labelled Bug that it hasn't seen before, and
 finished ones (merged or released) that QA moved back to Todo. Every `SF_MERGE_POLL_SECONDS`
@@ -33,7 +34,8 @@ pr-opened → merged-awaiting-deploy → deployed                         (merge
 pr-opened → pr-update-queued → pr-updating-agent-working → pr-opened   (conflicts, failed build)
 needs-attention → pr-open-queued → agent-work-completed → pr-opened    (Open PR)
 merged, deployed or released, back in Todo → queued                   (triaged again with history)
-queued / plan-generated-for-review / needs-attention → release-queued → releasing → released
+plan-generated-for-review → awaiting-qa-answer → plan-rework-queued        (QA question posted, then QA answered)
+queued / plan-generated-for-review / awaiting-qa-answer / needs-attention → release-queued → releasing → released
 anything → needs-attention (the reason is on the issue page)
 ```
 
@@ -54,9 +56,13 @@ The plan page shows it in a Reproduction section. A chat bug that wasn't reprodu
 replay gets a "Not replayed" warning.
 
 A bug that **didn't reproduce** gets findings instead of a fix plan, and a draft question
-for QA. Approve is hidden. Edit the question and **Post to Linear** comments on the issue
-(nothing is posted on its own). When QA answers, send the answer as rework: the planner
-tries again and updates `reproduction.json`.
+for QA. Approve is hidden. Edit the question and **Post to Linear** comments on the issue,
+mentioning whoever reported it so Linear notifies them (nothing is posted on its own), and
+adds the `Need Clarification` label (`SF_LINEAR_CLARIFICATION_LABEL`; a team label of that
+name wins over a workspace one).
+Posting moves the issue to *awaiting QA*, which doesn't count toward
+`SF_MAX_PLANS_IN_REVIEW`, so new bugs keep being triaged while QA answers. When QA answers,
+send the answer as rework: the planner tries again and updates `reproduction.json`.
 
 ### Replaying a chat turn
 

@@ -112,7 +112,12 @@
     </div>
     {% endif %}
 
-    {% if repro and repro.status == 'not_reproduced' and 'rework' in actions %}
+    {% if issue.status == 'awaiting-qa-answer' %}
+    <div class="sf-banner" style="margin-top: 16px">
+        {{ ui.icon("external") }}
+        <div class="sf-banner-body"><p><strong>Waiting on QA.</strong>The question is on the Linear issue. This plan doesn't hold a plan-review place meanwhile, so new bugs keep being triaged. When QA answers, send the answer as rework.</p></div>
+    </div>
+    {% elif repro and repro.status == 'not_reproduced' and 'rework' in actions %}
     <section class="sf-section" aria-labelledby="qa-heading">
         <div class="sf-section-head"><h2 id="qa-heading">Question for QA</h2></div>
         <form class="sf-panel sf-qa-question" method="post" action="{{ url_for('post_qa_question', issue_id=issue.id) }}">
@@ -120,7 +125,7 @@
             <div class="sf-field">
                 <label class="sf-field-label" for="question">The planner couldn't reproduce the bug. Edit its question, then post it on the Linear issue.</label>
                 <div class="sf-input is-multiline"><textarea id="question" class="sf-input-control" name="question" rows="4" required>{{ repro.qa_question }}</textarea></div>
-                <p class="sf-field-hint">{% if linear_writeback %}Posted as a comment, as the factory's Linear user. When QA answers, send the answer as rework.{% else %}Posting is off while SF_LINEAR_WRITEBACK=0.{% endif %}</p>
+                <p class="sf-field-hint">{% if linear_writeback %}Posted as a comment, as the factory's Linear user, mentioning whoever reported the issue, with the {{ clarification_label }} label. When QA answers, send the answer as rework.{% else %}Posting is off while SF_LINEAR_WRITEBACK=0.{% endif %}</p>
             </div>
             <div class="sf-decision-actions">
                 <button type="submit" class="sf-btn sf-btn-primary"{% if not linear_writeback %} disabled{% endif %}>{{ ui.icon("external", 14) }}<span>Post to Linear</span></button>

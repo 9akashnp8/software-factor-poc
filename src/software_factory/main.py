@@ -116,11 +116,14 @@ and commit on the current branch. Do not push.
 # What an implementation run returns. The QA fields go into the Linear comment once the
 # fix is deployed, so they must make sense to someone who doesn't read the code.
 IMPLEMENTATION_RESULT = """Finish with these fields:
-- report: for the pull request, a short report of the root cause, what changed and the
-  tests you ran.
-- root_cause, fix and checked: one or two plain sentences each for QA, saying why the bug
-  happened, what now behaves differently, and how you checked it's fixed. No code, file
-  names or anything copied from <issue> or <bug_context>.
+- report: for the pull request, a short report of the root cause, what changed, the
+  tests you ran, and any check you didn't run (the browser, say) and why.
+- root_cause, fix and checked: posted on the Linear issue for QA once the fix ships, under
+  the factory's name. One or two plain sentences each, written about the fix, not about
+  yourself: no "I" or "we". Say why the bug happened, what now behaves differently, and
+  which checks show it's fixed. checked lists only checks that ran and passed: the comment
+  already says how the bug was reproduced, so don't repeat that, and checks you didn't run
+  belong in report. No code, file names or anything copied from <issue> or <bug_context>.
 - verification: status "passed" only if every check passed, "failed" if one still fails,
   "not_possible" if you couldn't run them (say why in notes). test: the command that runs
   the reproducing test alone, with its output before and after the fix. replay: the turn,

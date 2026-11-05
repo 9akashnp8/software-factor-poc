@@ -22,7 +22,7 @@ MERGED_STATUSES = frozenset({store.MERGED, store.DEPLOY_PENDING})
 # first time an issue reached the start to the first end after it.
 STAGES = [
     ("Triage to plan", store.GATHERING_CONTEXT, {store.PLAN_READY}),
-    ("Plan waiting for review", store.PLAN_READY, {store.IMPLEMENT_QUEUED, store.REWORK_QUEUED}),
+    ("Plan waiting for review", store.PLAN_READY, {store.IMPLEMENT_QUEUED, store.REWORK_QUEUED, store.AWAITING_QA}),
     ("Approval to PR", store.IMPLEMENT_QUEUED, {store.PR_OPENED}),
     ("PR waiting for merge", store.PR_OPENED, MERGED_STATUSES),
     ("Merge to deploy", store.DEPLOY_PENDING, {store.DEPLOYED}),

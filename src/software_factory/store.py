@@ -26,6 +26,9 @@ QUEUED = "queued"
 GATHERING_CONTEXT = "gathering-context"
 PLANNING = "gathered-context"
 PLAN_READY = "plan-generated-for-review"
+# A plan that didn't reproduce the bug, whose question is posted on Linear: waiting on QA,
+# not the reviewer, so it doesn't hold one of the MAX_PLANS_IN_REVIEW places
+AWAITING_QA = "awaiting-qa-answer"
 IMPLEMENT_QUEUED = "plan-approved-queued"
 IMPLEMENTING = "plan-approved-agent-working"
 REWORK_QUEUED = "plan-rework-queued"
@@ -60,10 +63,10 @@ NEEDS_ATTENTION = "needs-attention"
 # in. Claiming the issue with a compare-and-set on these keeps two clicks from queueing twice.
 ACTIONS = {
     "approve": frozenset({PLAN_READY, NEEDS_ATTENTION}),
-    "rework": frozenset({PLAN_READY, NEEDS_ATTENTION}),
+    "rework": frozenset({PLAN_READY, AWAITING_QA, NEEDS_ATTENTION}),
     "refresh": frozenset({PLAN_READY}),
     "retry": frozenset({NEEDS_ATTENTION}),
-    "release": frozenset({QUEUED, PLAN_READY, NEEDS_ATTENTION}),
+    "release": frozenset({QUEUED, PLAN_READY, AWAITING_QA, NEEDS_ATTENTION}),
     "publish": frozenset({NEEDS_ATTENTION}),
 }
 ACTION_QUEUES = {
@@ -102,7 +105,8 @@ REQUEUE_TO = {
     UPDATING: UPDATE_QUEUED,
     RELEASING: RELEASE_QUEUED,
 }
-# Plans that are, or will soon be, waiting on a person's review
+# Plans that are, or will soon be, waiting on a person's review. AWAITING_QA isn't one: QA
+# may take days to answer, and new bugs shouldn't wait on that
 REVIEW_LOAD = frozenset(
     {GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING, REFRESH_QUEUED, REFRESHING}
 )

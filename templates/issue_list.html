@@ -56,7 +56,7 @@
                 </div>
                 {% if not g.rows %}
                     <div class="sf-empty is-compact" style="border-top: 1px solid var(--line)"><p class="sf-empty-body">
-                        {% if g.key == 'run' and load.triage_paused %}Nothing running. Triage is paused while {{ load.plans }} of {{ load.max_plans }} plan-review places are taken: reviewing a plan frees one.
+                        {% if g.key == 'run' and load.triage_paused %}Nothing running. Triage is paused while {{ load.plans }} of {{ load.max_plans }} plan-review places are taken: reviewing a plan, or posting its question for QA, frees one.
                         {% else %}Nothing here.{% endif %}
                     </p></div>
                 {% else %}

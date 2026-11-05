@@ -158,6 +158,7 @@ def issue_detail(issue_id):
         replay_missing=plan is not None and (ws / "conversation.json").exists()
         and (repro is None or repro.get("method") != "replay"),
         linear_writeback=config.LINEAR_WRITEBACK,
+        clarification_label=config.LINEAR_CLARIFICATION_LABEL,
         base_branch=config.BASE_BRANCH,
     )
 
@@ -260,12 +261,29 @@ def post_qa_question(issue_id: str):
         flash("Posting to Linear is off (SF_LINEAR_WRITEBACK=0).")
     else:
         try:
-            asyncio.run(linear.comment(issue_id, question))
+            reporter = asyncio.run(linear.comment_to_reporter(issue_id, question))
         except (linear.LinearError, httpx.HTTPError) as e:
             flash(f"Couldn't post the question to Linear: {e}")
         else:
-            store.add_event(issue_id, "QA question posted to Linear", actor=request.authorization.username)
+            actor = request.authorization.username
+            if reporter is None:
+                flash("The Linear issue has no reporter to mention, so the question went without one.")
+            # Off the review count, so new bugs aren't held up while QA answers. A follow-up
+            # question, posted while already waiting, is only recorded.
+            if not store.transition(
+                issue_id, store.AWAITING_QA, expected={store.PLAN_READY}, actor=actor, reason=metrics.QA_QUESTION
+            ):
+                store.add_event(issue_id, metrics.QA_QUESTION, actor=actor)
             flash("Question posted to Linear. When QA answers, send the answer as rework.")
+            # The question is already posted, so a missing label is reported, not fatal
+            label = config.LINEAR_CLARIFICATION_LABEL
+            try:
+                asyncio.run(linear.add_label(issue_id, label))
+            except (linear.LinearError, httpx.HTTPError) as e:
+                store.add_event(issue_id, f"Couldn't add the Linear label {label}: {e}", actor=actor)
+                flash(f"Couldn't add the {label!r} label in Linear: {e}")
+            else:
+                store.add_event(issue_id, f"Linear label {label} added", actor=actor)
     return redirect(url_for("issue_detail", issue_id=issue_id))
 
 
