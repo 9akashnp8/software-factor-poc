@@ -37,8 +37,6 @@ the factory works today is in `docs/running.md` and `docs/agent-permissions.md`.
       plan again.
 - [ ] **Duplicate bugs are planned in parallel.** Give the planner the titles and plan
       summaries of issues already in flight, so it can say "same root cause as BEI-12".
-- [ ] **Reviewer comments on the PR.** "Changes requested" in Azure DevOps reaches nobody;
-      queue an update job with the comments, as conflicts and failed builds do.
 - [ ] **Track prompt fixes to apply in Langfuse.** A merged PR with `prompt-changes/*.md`
       should show up as "prompt to apply" until someone has.
 - [ ] **Overlap warning noise.** Nearly every plan mentions
@@ -70,6 +68,10 @@ the factory works today is in `docs/running.md` and `docs/agent-permissions.md`.
       hasn't run in a real implementation yet.
 - [ ] **The full deploy flow:** merge → Pending Deployment → In Review with the comment.
       It can't complete until a dev deploy succeeds.
+- [ ] **Reviewer comments on the PR** (`/factory fix`, `/factory replan`). Tested against a
+      fake Azure DevOps only. Check on a real PR that thread replies land under the right
+      comment, that `commentType` and `publishedDate` read as expected on our server, and
+      what our reviewers' `uniqueName` looks like, for `SF_PR_REVIEWERS`.
 - [ ] **Refresh plan.** Not yet run on a real plan. BEI-26 and BEI-27 are in review with
       BEI-20 and BEI-25 merged since; a refresh of either is the first real test.
 

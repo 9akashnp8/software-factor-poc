@@ -2,6 +2,7 @@ import json
 import mimetypes
 import os
 import ssl
+from datetime import datetime
 from pathlib import Path
 import httpx
 import re
@@ -11,6 +12,14 @@ CONVERSATION_ID_RE = re.compile(
 )
 
 UPLOAD_URL_RE = re.compile(r"https://uploads\.linear\.app/[^\s)\]>\"']+")
+
+
+def ado_time(value: str | None) -> datetime | None:
+    """An Azure DevOps time. They have up to seven fraction digits, which fromisoformat rejects."""
+    if not value:
+        return None
+    value = re.sub(r"(\.\d{6})\d+", r"\1", value).replace("Z", "+00:00")
+    return datetime.fromisoformat(value)
 
 
 def ssl_context() -> ssl.SSLContext:

@@ -44,7 +44,8 @@ FIXING = "fixing-review-findings"
 READY_FOR_PR = "ready-for-pr"
 WORK_COMPLETED = "agent-work-completed"
 PR_OPENED = "pr-opened"
-# The PR conflicts with the base branch or its build failed; pending_feedback says which
+# The PR conflicts with the base branch or its build failed, pending_feedback says which; or a
+# reviewer asked for changes with /factory fix, and review_threads holds their comments
 UPDATE_QUEUED = "pr-update-queued"
 UPDATING = "pr-updating-agent-working"
 MERGED = "merged"
@@ -137,6 +138,9 @@ CREATE TABLE IF NOT EXISTS issues (
     plan_base TEXT,
     reproduction TEXT,
     browser_check INTEGER NOT NULL DEFAULT 0,
+    review_threads TEXT,
+    review_rounds INTEGER NOT NULL DEFAULT 0,
+    pr_command_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -166,6 +170,12 @@ CREATE TABLE IF NOT EXISTS runs (
     error TEXT,
     rate_limited INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS pr_comments (
+    issue_id TEXT NOT NULL REFERENCES issues(id),
+    thread_id INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, thread_id, comment_id)
+);
 CREATE TABLE IF NOT EXISTS factory_state (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -191,6 +201,11 @@ _ADDED_COLUMNS = {
         "reproduction": "TEXT",
         # Set at approval: the implementer must check the fix in the browser
         "browser_check": "INTEGER NOT NULL DEFAULT 0",
+        # The reviewer comments a /factory fix sent to the agent (JSON), while that update runs
+        "review_threads": "TEXT",
+        "review_rounds": "INTEGER NOT NULL DEFAULT 0",
+        # When the last /factory command acted on was posted; older ones are done
+        "pr_command_at": "TEXT",
     },
     "runs": {"rate_limited": "INTEGER NOT NULL DEFAULT 0"},
 }
@@ -199,7 +214,7 @@ ISSUE_FIELDS = {
     "identifier", "title", "url", "session_id", "pr_url", "pr_id",
     "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
     "pr_conflict_key", "pr_build_id", "merged_at", "merge_commit", "deploy_build_seen",
-    "plan_base", "reproduction", "browser_check",
+    "plan_base", "reproduction", "browser_check", "review_threads", "pr_command_at",
 }
 
 
@@ -405,13 +420,61 @@ def queue_update(issue_id: str, reason: str, **seen) -> bool:
             to_status, flagged = UPDATE_QUEUED, None
         columns = "".join(f", {name} = ?" for name in seen)
         conn.execute(
-            f"""UPDATE issues SET status = ?, update_rounds = ?, pending_feedback = ?,
+            f"""UPDATE issues SET status = ?, update_rounds = ?, pending_feedback = ?, review_threads = NULL,
                     needs_attention_reason = ?, updated_at = ?{columns} WHERE id = ?""",
             (to_status, rounds, reason, flagged, _now(), *seen.values(), issue_id),
         )
         _event(conn, issue_id, PR_OPENED, to_status, "worker", flagged or reason)
         conn.execute("COMMIT")
         return to_status == UPDATE_QUEUED
+
+
+def queue_review(issue_id: str, replan: bool, feedback: str, threads: str | None, command_at: str) -> bool:
+    """Act on a reviewer's /factory command on an opened PR.
+
+    /factory fix (replan False) sends threads (JSON) to the agent as a PR update;
+    /factory replan sends feedback back to the planner as rework. Either way the command
+    counts as done (pr_command_at). After config.MAX_REVIEW_ROUNDS the issue needs attention
+    instead. Returns whether it was queued.
+    """
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT status, review_rounds FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        if row is None or row["status"] != PR_OPENED:
+            conn.execute("ROLLBACK")
+            return False
+        rounds = row["review_rounds"] + 1
+        queued = REWORK_QUEUED if replan else UPDATE_QUEUED
+        what = "Reviewer asked for a new plan" if replan else "Reviewer asked for changes"
+        if rounds > config.MAX_REVIEW_ROUNDS:
+            to_status, flagged = NEEDS_ATTENTION, f"{what} (after {config.MAX_REVIEW_ROUNDS} review rounds)"
+        else:
+            to_status, flagged = queued, None
+        conn.execute(
+            """UPDATE issues SET status = ?, review_rounds = ?, pending_feedback = ?, review_threads = ?,
+                   pr_command_at = ?, needs_attention_reason = ?, updated_at = ? WHERE id = ?""",
+            (to_status, rounds, feedback, None if replan else threads, command_at, flagged, _now(), issue_id),
+        )
+        _event(conn, issue_id, PR_OPENED, to_status, "worker", flagged or what)
+        conn.execute("COMMIT")
+        return to_status == queued
+
+
+def record_comment(issue_id: str, thread_id: int, comment_id: int):
+    """Remember a comment the factory posted on its PR. It posts with the PAT owner's
+    account, so this is how its own replies are told apart from that person's comments."""
+    with _db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO pr_comments (issue_id, thread_id, comment_id) VALUES (?, ?, ?)",
+            (issue_id, thread_id, comment_id),
+        )
+
+
+def factory_comments(issue_id: str) -> set[tuple[int, int]]:
+    """(thread id, comment id) of every comment the factory posted on the issue's PRs."""
+    with _db() as conn:
+        rows = conn.execute("SELECT thread_id, comment_id FROM pr_comments WHERE issue_id = ?", (issue_id,))
+        return {(row["thread_id"], row["comment_id"]) for row in rows}
 
 
 def reopen(issue_id: str) -> sqlite3.Row | None:
@@ -429,6 +492,7 @@ def reopen(issue_id: str) -> sqlite3.Row | None:
         conn.execute(
             """UPDATE issues SET status = ?, session_id = NULL, pr_url = NULL, pr_id = NULL,
                    pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
+                   review_threads = NULL, review_rounds = 0, pr_command_at = NULL,
                    pending_feedback = NULL, needs_attention_reason = NULL, slot = NULL, reproduction = NULL,
                    browser_check = 0, updated_at = ?
                WHERE id = ?""",
@@ -469,6 +533,7 @@ def restart(issue_id: str, actor: str) -> bool:
         conn.execute(
             """UPDATE issues SET status = ?, session_id = NULL, pr_url = NULL, pr_id = NULL,
                    pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
+                   review_threads = NULL, review_rounds = 0, pr_command_at = NULL,
                    pending_feedback = NULL, needs_attention_reason = NULL, plan_reviewed_by = NULL,
                    slot = NULL, reproduction = NULL, browser_check = 0, updated_at = ?
                WHERE id = ?""",
@@ -489,7 +554,8 @@ def back_to_plan_review(issue_id: str, actor: str) -> bool:
             return False
         conn.execute(
             """UPDATE issues SET status = ?, attempts = 0, update_rounds = 0, pending_feedback = NULL,
-                   needs_attention_reason = NULL, updated_at = ? WHERE id = ?""",
+                   review_threads = NULL, review_rounds = 0, needs_attention_reason = NULL, updated_at = ?
+               WHERE id = ?""",
             (PLAN_READY, _now(), issue_id),
         )
         _event(conn, issue_id, before["status"], PLAN_READY, actor, "Reset: back to plan review")
