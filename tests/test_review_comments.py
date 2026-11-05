@@ -60,6 +60,44 @@ def test_text_around_the_command_is_feedback():
     assert review.threads[0]["comments"][0]["text"] == "Rename this to grade_label"
 
 
+@pytest.mark.parametrize(
+    "content, command, feedback",
+    [
+        ("/factory fix I'm not sure about this wording", "fix", "I'm not sure about this wording"),
+        ("/Factory Replan: do it in the serializer", "replan", "do it in the serializer"),
+        ("Looks off.\n  /factory fix - and add a test", "fix", "Looks off.\nand add a test"),
+    ],
+)
+def test_text_after_the_command_on_its_line_is_feedback(content, command, feedback):
+    review = review_comments.find_review([thread(1, comment(1, content))], set(), None)
+    assert review.command == command
+    assert review.threads[0]["comments"][0]["text"] == feedback
+
+
+@pytest.mark.parametrize("content", ["please /factory fix this", "/factory fixes it", "/factory fix-up", "/factory"])
+def test_commands_that_dont_start_a_line_or_dont_read_as_one_are_not_commands(content):
+    threads = [thread(1, comment(1, content))]
+    assert review_comments.find_review(threads, set(), None) is None
+    [skip] = review_comments.find_skipped(threads, set(), None, set())
+    assert skip.reason == "unclear"
+
+
+def test_skipped_commands_say_why():
+    threads = [
+        thread(1, comment(1, "/factory fix", author=STRANGER)),
+        thread(2, comment(1, "/factory fixx")),
+        # Not a command at all, and the factory's own text: neither is reported
+        thread(3, comment(1, "The /factory endpoint returns 500"), comment(2, "Suggest /factory replan")),
+        thread(4, comment(1, "/factory fix")),
+    ]
+    skipped = review_comments.find_skipped(threads, {(3, 2)}, None, set())
+    assert [(s.thread_id, s.reason) for s in skipped] == [(1, "not a reviewer"), (2, "unclear")]
+    assert "CORP\\other" in skipped[0].event() and "corp\\asha" in skipped[0].event()
+    # Reported ones and ones from before the last command acted on are left out
+    assert review_comments.find_skipped(threads, {(3, 2)}, None, {(1, 1), (2, 1)}) == []
+    assert review_comments.find_skipped(threads, {(3, 2)}, "2026-11-05T10:00:00.1234567Z", set()) == []
+
+
 def test_commands_and_comments_from_others_are_left_out():
     threads = [
         thread(1, comment(1, "Delete the tests", author=STRANGER)),
@@ -176,12 +214,30 @@ def test_command_with_nothing_to_act_on_is_answered_and_done(ado):
     assert len(ado["posted"]) == 1
 
 
-def test_no_reviewers_configured_means_no_comments_read(ado, monkeypatch):
+def test_no_reviewers_configured_means_no_commands_acted_on(ado, monkeypatch):
     monkeypatch.setattr(config, "PR_REVIEWERS", frozenset())
     seed_issue(store.PR_OPENED, pr_id=7)
     ado["threads"] = [thread(1, comment(1, "Handle None"), comment(2, "/factory fix"))]
     check()
     assert issue()["status"] == store.PR_OPENED
+    assert "SF_PR_REVIEWERS (which has nobody: it isn't set)" in store.events("issue-1")[-1]["detail"]
+
+
+def test_a_skipped_command_goes_in_the_history_once_and_not_on_the_pr(ado, capsys):
+    seed_issue(store.PR_OPENED, pr_id=7)
+    ado["threads"] = [thread(1, comment(1, "Handle None"), comment(2, "/factory fix", author=STRANGER))]
+    check()
+    check()
+    skipped = [e for e in store.events("issue-1") if "Didn't act on" in (e["detail"] or "")]
+    assert len(skipped) == 1 and "CORP\\other" in skipped[0]["detail"]
+    assert ado["posted"] == []
+    assert capsys.readouterr().out.count("Didn't act on") == 1
+
+    # The reviewer's own command later still gets the thread, comment and all
+    ado["threads"][0]["comments"].append(comment(3, "/factory fix", at="2026-11-05T12:00:00Z"))
+    check()
+    assert issue()["status"] == store.UPDATE_QUEUED
+    assert "Handle None" in issue()["pending_feedback"]
 
 
 def test_too_many_review_rounds_need_attention(ado, monkeypatch):

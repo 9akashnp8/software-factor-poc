@@ -3,6 +3,8 @@
 A reviewer leaves comments on the PR in Azure DevOps as usual, then comments
 `/factory fix` to send them to the agent, or `/factory replan` to send them back to the
 planner. Only comments from config.PR_REVIEWERS count: they reach an agent with a shell.
+A command that isn't acted on, from someone else or written so it doesn't read as one, is
+reported once in the issue's history so it doesn't vanish silently.
 
 The factory posts with the PAT owner's account, who may be a reviewer too, so its own
 replies are told apart by their ids (store.record_comment) and by REPLY_PREFIX.
@@ -17,7 +19,10 @@ import httpx
 from software_factory import config, store
 from software_factory.utils import ado_time
 
-COMMAND_RE = re.compile(r"^[ \t]*/factory[ \t]+(fix|replan)[ \t]*$", re.IGNORECASE | re.MULTILINE)
+# A command starts a line; the rest of the line is feedback like any other ("/factory fix: rename it")
+COMMAND_RE = re.compile(r"^[ \t]*/factory[ \t]+(fix|replan)(?![\w-])[ \t]*[:,.\-]?[ \t]*", re.IGNORECASE | re.MULTILINE)
+# Looks like someone meant a command: /factory starting a line, or a command anywhere
+MENTION_RE = re.compile(r"^[ \t]*/factory\b|/factory[ \t]+(fix|replan)\b", re.IGNORECASE | re.MULTILINE)
 REPLY_PREFIX = "**Software Factory:**"
 # Threads a reviewer still expects something on; fixed, won't fix, closed and by design are done
 OPEN_STATUSES = frozenset({"active", "pending"})
@@ -34,6 +39,31 @@ class Review:
     threads: list[dict] = field(default_factory=list)
     # Comments in open threads from people not in config.PR_REVIEWERS, left out
     ignored: int = 0
+
+
+@dataclass
+class Skipped:
+    """A comment that looks like a /factory command but isn't acted on."""
+
+    thread_id: int
+    comment_id: int
+    reason: str  # "not a reviewer" or "unclear"
+    author: dict
+
+    def name(self) -> str:
+        return self.author.get("uniqueName") or self.author.get("displayName") or "this person"
+
+    def event(self) -> str:
+        if self.reason == "unclear":
+            return (
+                f"Didn't act on a PR comment that mentions /factory from {self.name()}: "
+                "commands go at the start of a line, as /factory fix or /factory replan"
+            )
+        reviewers = ", ".join(sorted(config.PR_REVIEWERS)) or "nobody: it isn't set"
+        return (
+            f"Didn't act on a /factory command from {self.name()}: they aren't in SF_PR_REVIEWERS "
+            f"(which has {reviewers})"
+        )
 
 
 def allowed(author: dict | None) -> bool:
@@ -106,6 +136,32 @@ def find_review(threads: list[dict], posted: set[tuple[int, int]], since: str | 
     return review
 
 
+def find_skipped(
+    threads: list[dict], posted: set[tuple[int, int]], since: str | None, reported: set[tuple[int, int]]
+) -> list[Skipped]:
+    """Comments posted after since that look like a command but won't be acted on, and
+    weren't reported yet: commands from people not in config.PR_REVIEWERS, and reviewers'
+    commands that don't read as one."""
+    after = ado_time(since)
+    skipped = []
+    for thread in threads:
+        if thread.get("isDeleted"):
+            continue
+        for comment in _text_comments(thread):
+            content = comment.get("content") or ""
+            if (thread["id"], comment["id"]) in reported or _ours(thread["id"], comment, posted):
+                continue
+            at = ado_time(comment.get("publishedDate"))
+            if at is None or (after is not None and at <= after) or not MENTION_RE.search(content):
+                continue
+            author = comment.get("author") or {}
+            if not allowed(author):
+                skipped.append(Skipped(thread["id"], comment["id"], "not a reviewer", author))
+            elif not COMMAND_RE.search(content):
+                skipped.append(Skipped(thread["id"], comment["id"], "unclear", author))
+    return skipped
+
+
 def render(threads: list[dict]) -> str:
     """The threads as the agent reads them."""
     parts = []
@@ -146,11 +202,32 @@ REPLANNING = "Sent back for a new plan."
 
 
 async def check(client: httpx.AsyncClient, issue) -> str | None:
-    """Act on a new /factory command on the issue's PR. Returns what was done, for the log."""
-    if not config.PR_REVIEWERS:
-        return None
+    """Act on a new /factory command on the issue's PR, and say why when one isn't acted on.
+    Returns what was done, for the log."""
     threads = await list_threads(client, issue["pr_id"])
-    review = find_review(threads, store.factory_comments(issue["id"]), issue["pr_command_at"])
+    posted = store.factory_comments(issue["id"])
+    outcomes = report_skipped(issue, threads, posted)
+    if done := await act(client, issue, threads, posted):
+        outcomes.append(done)
+    return "; ".join(outcomes) or None
+
+
+def report_skipped(issue, threads: list[dict], posted: set) -> list[str]:
+    """Say once, in the issue's history and the worker's log, why a command isn't acted on.
+
+    Not on the PR: a reply there would look like the factory answering the thread, and
+    leave a reviewer's comments in it out of the next /factory fix.
+    """
+    outcomes = []
+    for skip in find_skipped(threads, posted, issue["pr_command_at"], store.skipped_commands(issue["id"])):
+        if store.record_skipped_command(issue["id"], skip.thread_id, skip.comment_id):
+            store.add_event(issue["id"], skip.event())
+            outcomes.append(skip.event())
+    return outcomes
+
+
+async def act(client: httpx.AsyncClient, issue, threads: list[dict], posted: set) -> str | None:
+    review = find_review(threads, posted, issue["pr_command_at"])
     if review is None:
         return None
     if review.ignored:

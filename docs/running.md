@@ -264,7 +264,7 @@ merge unresolved, the issue needs attention.
 ## Reviewer comments on the PR
 
 Review the factory's PR in Azure DevOps as you would any other: comment on lines, start
-threads. Nothing happens until you comment one of these, on a line of its own, anywhere
+threads. Nothing happens until you comment one of these at the start of a line, anywhere
 on the PR:
 
 - **`/factory fix`**: the agent resumes its implementation session with every open thread
@@ -280,18 +280,24 @@ on the PR:
   is wrong, not the details. The agent says so in its reply when it thinks a comment
   needs this.
 
-Write the comments first and the command last. Comments in the same comment as the
-command count too (`Rename this\n/factory fix`).
+Write the comments first and the command last. Text in the same comment as the command
+counts as a comment too, before it or after it on its line (`/factory fix: rename this`).
 
 What counts:
 
-- Only comments and commands from the people in `SF_PR_REVIEWERS` (their unique name,
-  `DOMAIN\user` or email, or their id). They reach an agent with a shell, so nobody
-  else's do; the issue's history says how many were left out. Unset, PR comments are ignored.
+- Only comments and commands from the people in `SF_PR_REVIEWERS`. They reach an agent
+  with a shell, so nobody else's do; the issue's history says how many were left out.
+  Unset, no command is acted on. Use your unique name exactly as Azure DevOps reports it,
+  which may be your email rather than `DOMAIN\user`: it's `author.uniqueName` on your
+  comments at `<repo API>/pullRequests/<id>/threads`. The id there works too.
 - Open threads only (Active or Pending). Resolve a thread to take it out.
 - A thread the factory answered last is waiting on you; reply in it to send it again.
 - Each command is acted on once. A command with no open comments to act on gets a reply
   saying so, and nothing runs.
+- A command that isn't acted on, because its author isn't in `SF_PR_REVIEWERS` or because
+  it doesn't read as one (`please /factory fix`, `/factory fixx`), goes in the issue's
+  history and the worker's log, with the reason and the author's unique name. Not on the
+  PR: a reply there would count as the factory answering that thread.
 
 The factory posts as the owner of `AZURE_DEVOPS_PAT`, so its replies start with
 **Software Factory:**, and it remembers their ids to tell them apart from that person's own
