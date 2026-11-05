@@ -1,13 +1,14 @@
 """Watch the PRs the factory opened: clean up after merges, send PRs that conflict with the
-base branch or fail their build back to their agent, and follow merged fixes to deployment."""
+base branch, fail their build or get a reviewer's /factory command back to their agent, and
+follow merged fixes to deployment."""
 
 import re
 from datetime import datetime, timedelta
 
 import httpx
 
-from software_factory import cleanup, config, deployments, store
-from software_factory.utils import ssl_context
+from software_factory import cleanup, config, deployments, review_comments, store
+from software_factory.utils import ado_time as _time, ssl_context
 
 # The project's API root; the repo API sits under it at /_apis/git/repositories/<repo>
 ADO_PROJECT_API = config.ADO_REPO_API.split("/_apis/")[0] + "/_apis"
@@ -85,6 +86,11 @@ async def build_failure(client: httpx.AsyncClient, build_id: int) -> str:
     return "\n\n".join(sections)
 
 
+async def set_description(client: httpx.AsyncClient, pr_id: int, description: str):
+    result = await client.patch(f"{config.ADO_REPO_API}/pullrequests/{pr_id}", json={"description": description})
+    result.raise_for_status()
+
+
 def _commit(pr: dict, key: str) -> str | None:
     return (pr.get(key) or {}).get("commitId")
 
@@ -116,6 +122,21 @@ async def check_pull_request(client: httpx.AsyncClient, issue) -> str | None:
             return "conflicts"
         return None
 
+    try:
+        if outcome := await check_build(client, issue, source):
+            return outcome
+    except httpx.HTTPStatusError as e:
+        if "/_apis/build/" not in e.request.url.path or e.response.status_code not in (401, 403):
+            raise
+        print(
+            f"{issue['identifier']}: can't read PR {issue['pr_id']}'s builds. Failed builds go "
+            "unnoticed until AZURE_DEVOPS_PAT has the Build (Read) scope."
+        )
+    return await review_comments.check(client, issue)
+
+
+async def check_build(client: httpx.AsyncClient, issue, source: str | None) -> str | None:
+    """Send the PR back if the newest build of its current commit failed and is new to us."""
     build = await latest_build(client, issue["pr_id"])
     if not build or build.get("status") != "completed" or build.get("result") != "failed":
         return None
@@ -146,14 +167,6 @@ def failure_reason(details: str) -> str:
         errors = [line[2:].strip() for line in lines if line.startswith("- ") and line[2:].strip()]
         reason = errors[-1] if errors else "no error reported"
     return reason.rstrip(".")[:300]
-
-
-def _time(value: str | None) -> datetime | None:
-    """Azure DevOps times have up to seven fraction digits, which fromisoformat rejects."""
-    if not value:
-        return None
-    value = re.sub(r"(\.\d{6})\d+", r"\1", value).replace("Z", "+00:00")
-    return datetime.fromisoformat(value)
 
 
 async def deploy_runs(client: httpx.AsyncClient, since: datetime) -> list[dict]:
@@ -234,15 +247,6 @@ async def check_pull_requests():
             try:
                 if outcome := await check_pull_request(client, issue):
                     print(f"{issue['identifier']}: PR {issue['pr_id']} {outcome}")
-            except httpx.HTTPStatusError as e:
-                # Merges, abandons and conflicts were already handled; only the build check failed
-                if "/_apis/build/" in e.request.url.path and e.response.status_code in (401, 403):
-                    print(
-                        f"{issue['identifier']}: can't read PR {issue['pr_id']}'s builds. Failed builds go "
-                        "unnoticed until AZURE_DEVOPS_PAT has the Build (Read) scope."
-                    )
-                else:
-                    print(f"{issue['identifier']}: couldn't check PR {issue['pr_id']}: {e}")
             except httpx.HTTPError as e:
                 print(f"{issue['identifier']}: couldn't check PR {issue['pr_id']}: {e}")
         for issue in awaiting_deploy:

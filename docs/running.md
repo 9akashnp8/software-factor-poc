@@ -16,7 +16,7 @@ Work a person is waiting on goes first:
 
 1. Approved plans, to implement.
 2. Plans sent back for rework, then plans you asked to refresh.
-3. Opened PRs that need an update (see below), and issues you released.
+3. Opened PRs that need an update (see below, and reviewer comments), and issues you released.
 4. New bugs to triage, oldest first. A new bug also needs a free slot, and waits while
    `SF_MAX_PLANS_IN_REVIEW` (3) plans are being written, reworked or waiting for your review.
    A plan waiting on QA's answer to its question doesn't count.
@@ -31,7 +31,8 @@ queued → gathering-context → gathered-context (planning) → plan-generated-
   rework  → plan-rework-queued → plan-rework-requested-agent-planning → plan-generated-for-review
   refresh → plan-refresh-queued → plan-refresh-agent-planning → plan-generated-for-review
 pr-opened → merged-awaiting-deploy → deployed                         (merged, then a deploy succeeds)
-pr-opened → pr-update-queued → pr-updating-agent-working → pr-opened   (conflicts, failed build)
+pr-opened → pr-update-queued → pr-updating-agent-working → pr-opened   (conflicts, failed build, /factory fix)
+pr-opened → plan-rework-queued → … → plan-generated-for-review         (/factory replan)
 needs-attention → pr-open-queued → agent-work-completed → pr-opened    (Open PR)
 merged, deployed or released, back in Todo → queued                   (triaged again with history)
 plan-generated-for-review → awaiting-qa-answer → plan-rework-queued        (QA question posted, then QA answered)
@@ -259,6 +260,51 @@ builds go unnoticed, and the worker log says so on every check.
 Each conflict (a pair of source and target commits) and each failed build is acted on
 once. After `SF_MAX_UPDATE_ROUNDS` (3) rounds for one PR, or when the agent leaves the
 merge unresolved, the issue needs attention.
+
+## Reviewer comments on the PR
+
+Review the factory's PR in Azure DevOps as you would any other: comment on lines, start
+threads. Nothing happens until you comment one of these, on a line of its own, anywhere
+on the PR:
+
+- **`/factory fix`**: the agent resumes its implementation session with every open thread
+  that has a reviewer comment it hasn't answered, and no new plan. For each thread it
+  makes the change, or answers if it's a question or it thinks the code is right. If it
+  changed code, it verifies again, and the worker re-runs the reproducing test, as before
+  the PR. The worker then pushes to the same PR, refreshes the description's before/after
+  table, and replies in each thread. The thread with the command gets a summary ("Pushed
+  1a2b3c4d for 2 comment threads").
+- **`/factory replan`**: the threads go back to the planner as rework, with the fix already
+  on the branch. The revised plan comes to the plan page for review, and approving it
+  implements it on top of the branch and pushes to the same PR. Use it when the approach
+  is wrong, not the details. The agent says so in its reply when it thinks a comment
+  needs this.
+
+Write the comments first and the command last. Comments in the same comment as the
+command count too (`Rename this\n/factory fix`).
+
+What counts:
+
+- Only comments and commands from the people in `SF_PR_REVIEWERS` (their unique name,
+  `DOMAIN\user` or email, or their id). They reach an agent with a shell, so nobody
+  else's do; the issue's history says how many were left out. Unset, PR comments are ignored.
+- Open threads only (Active or Pending). Resolve a thread to take it out.
+- A thread the factory answered last is waiting on you; reply in it to send it again.
+- Each command is acted on once. A command with no open comments to act on gets a reply
+  saying so, and nothing runs.
+
+The factory posts as the owner of `AZURE_DEVOPS_PAT`, so its replies start with
+**Software Factory:**, and it remembers their ids to tell them apart from that person's own
+comments.
+
+If the re-check fails, the issue needs attention and nothing is pushed; **Open PR** pushes
+it anyway. Threads that got no reply go to the agent again on the next `/factory fix`.
+After `SF_MAX_REVIEW_ROUNDS` (5) commands on one PR, the issue needs attention. While a
+replan is in review, the PR isn't watched; a merge or abandon shows once the issue is back
+at `pr-opened`.
+
+The worker reads the PR's threads on every PR check (`SF_MERGE_POLL_SECONDS`), after
+conflicts and failed builds, which go first.
 
 When you review a plan, the page warns if the files it names are also in another issue's
 plan or branch. It's a warning only: approving both is fine.

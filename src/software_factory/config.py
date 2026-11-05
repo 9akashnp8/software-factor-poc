@@ -54,6 +54,14 @@ MERGE_POLL_SECONDS = _int("SF_MERGE_POLL_SECONDS", 600)
 MAX_PLANS_IN_REVIEW = _int("SF_MAX_PLANS_IN_REVIEW", 3)
 # Times an opened PR goes back to its agent for conflicts or a failed build before needing attention
 MAX_UPDATE_ROUNDS = _int("SF_MAX_UPDATE_ROUNDS", 3)
+# Times reviewers can send an opened PR back with /factory fix or /factory replan
+MAX_REVIEW_ROUNDS = _int("SF_MAX_REVIEW_ROUNDS", 5)
+# Whose PR comments the factory acts on: their Azure DevOps unique names (DOMAIN\user or
+# email) or ids, comma-separated. Comments run an agent with a shell, so nobody else's count.
+# Empty turns review comments off.
+PR_REVIEWERS = frozenset(
+    name.strip().lower() for name in os.getenv("SF_PR_REVIEWERS", "").split(",") if name.strip()
+)
 # Rate-limited runs go back on the queue this many times before needing attention
 MAX_ATTEMPTS = _int("SF_MAX_ATTEMPTS", 3)
 
