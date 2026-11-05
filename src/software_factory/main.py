@@ -919,6 +919,21 @@ def rerun_test(issue, worktree: Path, command: str) -> tuple[bool, str]:
     return done.returncode == 0, output.strip()[-RERUN_OUTPUT_CHARS:]
 
 
+def unmet_checks(verification: dict) -> str:
+    """What the implementer said about each check that didn't run or didn't pass, a line each.
+
+    The notes sum the verification up; the reasons are on the checks themselves.
+    """
+    lines = []
+    browser = verification.get("browser") or {}
+    if browser.get("result") and not (browser.get("done") and browser.get("passed")):
+        lines.append(f"Browser check: {browser['result'].strip()}")
+    replay = verification.get("replay") or {}
+    if replay.get("result") and not replay.get("after"):
+        lines.append(f"Replay: {replay['result'].strip()}")
+    return "\n".join(lines)
+
+
 async def check_verification(issue, worktree: Path):
     """Raise VerificationFailure unless the implementer's verification holds up."""
     ws = store.issue_dir(issue["id"])
@@ -927,10 +942,14 @@ async def check_verification(issue, worktree: Path):
     except (OSError, ValueError):
         raise VerificationFailure("The implementer reported no verification")
     notes = (verification.get("notes") or "").strip()
+    # The issue page shows the first line as the headline and the rest beneath it
+    details = unmet_checks(verification)
     if verification.get("status") == "not_possible":
-        raise VerificationFailure(f"The implementer couldn't verify the fix. {notes}".strip(), retry=False)
+        message = f"The implementer couldn't verify the fix. {notes}".strip()
+        raise VerificationFailure(f"{message}\n{details}".strip(), retry=False)
     if verification.get("status") != "passed":
-        raise VerificationFailure(f"The implementer's verification failed. {notes}".strip())
+        message = f"The implementer's verification failed. {notes}".strip()
+        raise VerificationFailure(f"{message}\n{details}".strip())
     browser = verification.get("browser") or {}
     if issue["browser_check"] and not (browser.get("done") and browser.get("passed")):
         raise VerificationFailure(

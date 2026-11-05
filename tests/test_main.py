@@ -572,6 +572,39 @@ def test_unverifiable_fix_needs_attention_and_can_still_be_published(monkeypatch
     assert "publish" in store.allowed_actions(issue())
 
 
+def test_unverifiable_fix_says_why_each_check_didnt_run(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    verification = {
+        "status": "not_possible",
+        "notes": "The replay and browser checks could not be run.",
+        "browser": {"done": False, "result": "No test account in the environment."},
+        "replay": {"turn": 1, "after": "", "result": "No recorded chat to replay."},
+        "test": {"command": "uv run pytest -k grade", "before": "1 failed", "after": "1 passed"},
+    }
+    fake_agent(monkeypatch, results=[implemented(verification=verification)])
+    implement()
+    # The issue page shows the first line as the headline and the rest beneath it
+    headline, details = issue()["needs_attention_reason"].split("\n", 1)
+    assert headline == (
+        "Verification failed: The implementer couldn't verify the fix. "
+        "The replay and browser checks could not be run."
+    )
+    assert details == "Browser check: No test account in the environment.\nReplay: No recorded chat to replay."
+
+
+def test_checks_that_ran_add_nothing_to_the_reason(monkeypatch, pr_calls):
+    seed_issue(store.IMPLEMENTING)
+    verification = {
+        "status": "not_possible",
+        "notes": "ERP is down",
+        "browser": {"done": True, "passed": True, "result": "The page shows the right total."},
+        "replay": {"turn": 1, "after": "replays/after-1.json", "result": "The answer names HR only."},
+    }
+    fake_agent(monkeypatch, results=[implemented(verification=verification)])
+    implement()
+    assert issue()["needs_attention_reason"] == "Verification failed: The implementer couldn't verify the fix. ERP is down"
+
+
 def test_required_browser_check_is_asked_for_and_enforced(monkeypatch, pr_calls):
     seed_issue(store.IMPLEMENTING, browser_check=1)
     sessions = fake_agent(monkeypatch, results=[implemented()])
