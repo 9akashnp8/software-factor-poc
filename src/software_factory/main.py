@@ -72,7 +72,10 @@ Workflow:
 5. Fix the root cause with the smallest change, and add or update a test where one fits.
 
 Your worktree has a slot of its own: its ports, database and Redis queue are already set in
-your environment. To run the app, follow docs/agents/running-the-app.md.
+your environment. To run the app, follow docs/agents/running-the-app.md. The api reads its
+model keys and other settings from the worktree's .env, so they aren't in your environment.
+The web app's test account is in AWP_TEST_USERNAME and AWP_TEST_PASSWORD (AWP_TEST_APPROVER_*
+for a policy approver); never write their values anywhere.
 
 Prompts named like awp/... are managed in Langfuse, not in this repo. If the fix is a
 prompt change, write the prompt's full new system message, in Langfuse's template syntax
@@ -152,16 +155,19 @@ IMPLEMENT_STEPS = """1. Where a test fits, turn the reproduction into a test tha
    - {browser}
    If a check fails, fix it and verify again. Commit everything; don't push or open a PR."""
 
-BROWSER_REQUIRED = """the reviewer requires a browser check. Start the api and the web app
-     (docs/agents/running-the-app.md), sign in with the test account from the environment
-     (never write its values anywhere), walk through the reproduction steps with the
-     Playwright tools, and take a screenshot of the result. Stop both servers when done."""
+# Why a browser check couldn't be done must come from trying it, not from guessing
+BROWSER_ATTEMPT = """Don't report it as not possible without trying: if
+     the servers don't start or the sign-in fails, give the error that stopped you."""
 
-BROWSER_OPTIONAL = """if the bug shows in the web app, check it there too: start the api and
-     the web app (docs/agents/running-the-app.md), sign in with the test account from the
-     environment (never write its values anywhere), walk through the reproduction steps
-     with the Playwright tools, and take a screenshot of the result. Stop both servers
-     when done."""
+BROWSER_REQUIRED = f"""the reviewer requires a browser check. Start the api and the web app
+     (docs/agents/running-the-app.md), sign in with the test account, walk through the
+     reproduction steps with the Playwright tools, and take a screenshot of the result.
+     Stop both servers when done. {BROWSER_ATTEMPT}"""
+
+BROWSER_OPTIONAL = f"""if the bug shows in the web app, check it there too: start the api and
+     the web app (docs/agents/running-the-app.md), sign in with the test account, walk
+     through the reproduction steps with the Playwright tools, and take a screenshot of the
+     result. Stop both servers when done. {BROWSER_ATTEMPT}"""
 
 IMPLEMENT_PROMPT = "Plan approved. Implement it:\n\n{steps}\n\n" + IMPLEMENTATION_RESULT
 
