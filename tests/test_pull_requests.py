@@ -48,6 +48,8 @@ def ado(monkeypatch):
             return httpx.Response(200, text="2026-10-19T07:38:40.0143543Z == short test summary info ==\n2026-10-19T07:38:40.0143731Z FAILED apps/api/tests/test_grades.py::test_none\n")
         if path.endswith("/timeline"):
             return httpx.Response(200, json=TIMELINE)
+        if path.endswith("/threads"):
+            return httpx.Response(200, json={"value": []})
         if path.endswith("/build/builds"):
             assert request.url.params["branchName"] == "refs/pull/7/merge"
             return httpx.Response(200, json={"value": state["builds"]})
@@ -191,6 +193,8 @@ def test_pat_without_build_scope_still_handles_conflicts(monkeypatch, capsys):
     def handler(request: httpx.Request):
         if "/_apis/build/" in request.url.path:
             return httpx.Response(401)
+        if request.url.path.endswith("/threads"):
+            return httpx.Response(200, json={"value": []})
         conflicted = request.url.path.endswith("/8")
         return httpx.Response(200, json=pr(merge_status="conflicts" if conflicted else "succeeded"))
 

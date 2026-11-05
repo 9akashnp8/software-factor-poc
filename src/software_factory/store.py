@@ -176,6 +176,13 @@ CREATE TABLE IF NOT EXISTS pr_comments (
     comment_id INTEGER NOT NULL,
     PRIMARY KEY (issue_id, thread_id, comment_id)
 );
+-- /factory commands on the issue's PR that weren't acted on, and already said so
+CREATE TABLE IF NOT EXISTS pr_skipped_commands (
+    issue_id TEXT NOT NULL REFERENCES issues(id),
+    thread_id INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, thread_id, comment_id)
+);
 CREATE TABLE IF NOT EXISTS factory_state (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -474,6 +481,22 @@ def factory_comments(issue_id: str) -> set[tuple[int, int]]:
     """(thread id, comment id) of every comment the factory posted on the issue's PRs."""
     with _db() as conn:
         rows = conn.execute("SELECT thread_id, comment_id FROM pr_comments WHERE issue_id = ?", (issue_id,))
+        return {(row["thread_id"], row["comment_id"]) for row in rows}
+
+
+def record_skipped_command(issue_id: str, thread_id: int, comment_id: int) -> bool:
+    """Remember a /factory command that wasn't acted on. False if it already was."""
+    with _db() as conn:
+        added = conn.execute(
+            "INSERT OR IGNORE INTO pr_skipped_commands (issue_id, thread_id, comment_id) VALUES (?, ?, ?)",
+            (issue_id, thread_id, comment_id),
+        )
+        return added.rowcount == 1
+
+
+def skipped_commands(issue_id: str) -> set[tuple[int, int]]:
+    with _db() as conn:
+        rows = conn.execute("SELECT thread_id, comment_id FROM pr_skipped_commands WHERE issue_id = ?", (issue_id,))
         return {(row["thread_id"], row["comment_id"]) for row in rows}
 
 
