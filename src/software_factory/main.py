@@ -399,6 +399,11 @@ LIMITS = {
     "update": {"max_turns": 100, "max_budget_usd": 6.0},
 }
 
+# The largest single message the SDK takes from the CLI (its default is 1 MB). Reading an
+# image sends it back base64-encoded twice in one message, so a screenshot over ~390 KB
+# would crash the run.
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
 # Where a reopened issue's earlier plan and report are kept, in its workspace
 PREVIOUS_ATTEMPT_DIR = "previous-attempt"
 
@@ -578,7 +583,7 @@ async def run_agent(
     caller's checks, which expect the status the run started in, leave it alone.
     """
     run_id = store.start_run(issue_id, phase, owner)
-    options = replace(options, **LIMITS[phase])
+    options = replace(options, **LIMITS[phase], max_buffer_size=MAX_MESSAGE_BYTES)
     path = factory_log.transcript_path(issue_id, run_id, phase)
     transcript = factory_log.Transcript(path)
     transcript.write(
