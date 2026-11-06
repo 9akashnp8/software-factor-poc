@@ -315,6 +315,15 @@ def test_crashed_run_needs_attention_and_closes_the_run(monkeypatch, pr_calls):
     assert pr_calls == []
 
 
+def test_runs_accept_messages_bigger_than_the_sdk_default(monkeypatch, pr_calls):
+    # A screenshot the agent reads comes back base64-encoded twice in one message, which
+    # overflowed the SDK's 1 MB default for a ~450 KB PNG
+    seed_issue(store.IMPLEMENTING)
+    sessions = fake_agent(monkeypatch)
+    implement()
+    assert sessions[0].options.max_buffer_size >= 16 * 1024 * 1024
+
+
 def test_rework_saves_new_plan_without_touching_report(monkeypatch, pr_calls):
     ws = seed_issue(store.REWORKING)
     (ws / "report.md").write_text("old report")
