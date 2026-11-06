@@ -1,5 +1,7 @@
+import logging
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -8,7 +10,7 @@ import pytest
 # store reads this on import, so set it before any test module loads
 os.environ["SF_WORKSPACE_DIR"] = tempfile.mkdtemp(prefix="sf-tests-")
 
-from software_factory import config, store  # noqa: E402
+from software_factory import config, factory_log, store  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +26,23 @@ def workspace(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(config, "TARGET_REPO", tmp_path / "target")
     monkeypatch.setattr(config, "WORKTREE_DIR", tmp_path / "worktrees")
     return root
+
+
+@pytest.fixture(autouse=True)
+def isolated_logging():
+    """Undo what factory_log.setup() did in a test (worker.main() calls it), so each test
+    that sets logging up gets its own files."""
+    root = logging.getLogger()
+    handlers, level, configured, hook = root.handlers[:], root.level, factory_log._configured, sys.excepthook
+    factory_log._configured = None
+    yield
+    for handler in root.handlers:
+        if handler not in handlers:
+            handler.close()
+    root.handlers[:] = handlers
+    root.setLevel(level)
+    factory_log._configured = configured
+    sys.excepthook = hook
 
 
 def git(cwd: Path, *args: str) -> str:

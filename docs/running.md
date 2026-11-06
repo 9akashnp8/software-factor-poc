@@ -117,6 +117,36 @@ teardown.
 The PR description starts with a before/after table (test, replay, browser), and the plan
 page shows it with the screenshots.
 
+## The factory's own logs
+
+Everything the worker and the web app print also goes to a file, in `factory-logs/` in the
+workspace (`SF_LOG_DIR` moves it):
+
+- `worker.log`: the worker. Each job's start and end, every status change and history
+  event, each agent run's start and outcome with its cost, failed polls, and the full
+  traceback of anything that crashed.
+- `web.log`: the web app. The status changes its buttons make, requests (except the
+  notification polls and static files), and the traceback of any page that fails.
+- `cli.log`: `reset`, `logs` and `ingest`, with the command that was run.
+
+Each file rotates at 10 MB and keeps 10 old ones (`worker.log.1`, …). Times are UTC. A line
+about an issue names it, with the job when it's a worker job:
+
+```
+2026-11-06T09:14:02.511Z WARNING software_factory.store [BEI-12 implement] BEI-12: verifying-fix -> needs-attention: …
+```
+
+so `grep BEI-12 bug_workspace/factory-logs/worker.log*` gives one issue's story.
+`SF_LOG_LEVEL=DEBUG` adds more. Values of the factory's secrets (`FACTORY_SECRETS` in
+`config.py`) are masked in every line.
+
+Each agent run also gets a transcript, `runs/<run>-<phase>.jsonl` in the issue's workspace:
+the prompt, the model, every message (what the agent said, each tool call and its result),
+the Claude CLI's stderr, and the traceback if the run crashed. It's written as the run goes,
+so a crash or a stopped worker still leaves everything up to that point. The **Agent runs**
+table on the issue page links each run's transcript. Runs from before transcripts existed
+have none.
+
 ## Logs
 
 With `SF_LOKI_URL` set, triage fetches the app's logs (the api, the Celery worker and

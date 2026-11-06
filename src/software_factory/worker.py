@@ -8,19 +8,23 @@ go back to their agent. The web app only moves issues into the queued statuses.
 
 import argparse
 import importlib
-import traceback
+import logging
+import sys
+import time
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 
 import anyio
 import httpx
 
-from software_factory import cleanup, config, logs, pull_requests, reset, store
+from software_factory import cleanup, config, factory_log, logs, pull_requests, reset, store
 from software_factory.environment import fetch_base
 from software_factory.linear import LinearError, list_todo_bugs
 
 # By full name: the package's `main` attribute is this module's entry point, not the module
 pipeline = importlib.import_module("software_factory.main")
+
+log = logging.getLogger(__name__)
 
 # How often to look for queued work; claiming is one cheap SQLite transaction
 DISPATCH_SECONDS = 5
@@ -34,7 +38,7 @@ async def ingest() -> list[str]:
     try:
         bugs = await list_todo_bugs()
     except (LinearError, httpx.HTTPError) as e:
-        print(f"Couldn't list Linear issues: {e}")
+        log.warning("Couldn't list Linear issues: %s", e)
         return []
     queued = []
     # Oldest first: the queue serves issues in the order they were added
@@ -46,7 +50,7 @@ async def ingest() -> list[str]:
             pipeline.archive_attempt(bug["id"], previous["pr_url"])
             queued.append(f"{bug['identifier']} (reopened)")
     if queued:
-        print(f"Queued {', '.join(queued)}")
+        log.info("Queued %s", ", ".join(queued))
     return queued
 
 
@@ -87,36 +91,51 @@ class Dispatcher:
         return started
 
     async def _run(self, issue_id: str, job: str):
-        try:
-            await self.job(issue_id, job)
-        except Exception as e:
-            traceback.print_exc()
-            store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"The {job} job failed: {e!r}")
-        finally:
-            self.running -= 1
+        issue = store.get_issue(issue_id)
+        started = time.monotonic()
+        with factory_log.issue_context(issue["identifier"] if issue else issue_id, job):
+            log.info("%s job started (%s)", job, issue["status"] if issue else "unknown issue")
+            try:
+                await self.job(issue_id, job)
+            except Exception as e:
+                log.exception("%s job failed: %s", job, factory_log.describe(e))
+                store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"The {job} job failed: {e!r}")
+            finally:
+                self.running -= 1
+                after = store.get_issue(issue_id)
+                log.info(
+                    "%s job ended after %ds: %s",
+                    job,
+                    time.monotonic() - started,
+                    after["status"] if after else "unknown issue",
+                )
 
 
-async def every(seconds: float, step: Callable[[], Awaitable]):
+async def every(seconds: float, step: Callable[[], Awaitable], name: str = "A poll"):
     while True:
         try:
             await step()
-        except Exception:
+        except Exception as e:
             # One failed poll mustn't stop the worker
-            traceback.print_exc()
+            log.exception("%s failed: %s", name, factory_log.describe(e))
         await anyio.sleep(seconds)
 
 
 async def run_worker():
     if requeued := store.requeue_orphans():
-        print(f"Requeued {len(requeued)} issue(s) a previous worker left running")
+        log.warning("Requeued %d issue(s) a previous worker left running", len(requeued))
     dispatcher = Dispatcher(config.MAX_CONCURRENT_RUNS)
-    print(f"Worker started: up to {config.MAX_CONCURRENT_RUNS} runs at a time")
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(every, config.INGEST_SECONDS, ingest)
-        tg.start_soon(every, config.MERGE_POLL_SECONDS, pull_requests.check_pull_requests)
-        # Keeps the plan page's "dev has moved" count current
-        tg.start_soon(every, config.MERGE_POLL_SECONDS, lambda: anyio.to_thread.run_sync(fetch_base))
-        tg.start_soon(every, DISPATCH_SECONDS, lambda: dispatcher.dispatch(tg))
+    log.info("Worker started: up to %d runs at a time", config.MAX_CONCURRENT_RUNS)
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(every, config.INGEST_SECONDS, ingest, "Ingest")
+            tg.start_soon(every, config.MERGE_POLL_SECONDS, pull_requests.check_pull_requests, "PR check")
+            # Keeps the plan page's "dev has moved" count current
+            tg.start_soon(every, config.MERGE_POLL_SECONDS, lambda: anyio.to_thread.run_sync(fetch_base), "Fetching dev")
+            tg.start_soon(every, DISPATCH_SECONDS, lambda: dispatcher.dispatch(tg), "Dispatch")
+    finally:
+        # Ctrl+C or a crash; the next start requeues what was running
+        log.warning("Worker stopped with %d run(s) in progress", dispatcher.running)
 
 
 def reset_command(args) -> int:
@@ -142,8 +161,11 @@ def reset_command(args) -> int:
         else:
             results = [anyio.run(reset.reset_issue, args.issue, args.to, args.force)]
     except reset.ResetRefused as e:
+        log.warning("Reset refused: %s", e)
         print(e)
         return 1
+    for line in results:
+        log.info("Reset: %s", line)
     print("\n".join(results) or "Nothing to reset.")
     return 0
 
@@ -163,6 +185,7 @@ def logs_command(args) -> int:
         print(f"Couldn't query the logs: {e}")
         return 1
     path = logs.write(ws, "manual-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S"), entries)
+    log.info("Fetched %d Loki lines for %s into %s", len(entries), args.issue, path)
     print(f"{len(entries)} lines, saved to {path}")
     return 0
 
@@ -198,6 +221,14 @@ def main() -> None:
     logs_parser.add_argument("--contains", help="Only lines with this text, e.g. a conversation id")
     logs_parser.add_argument("--errors-only", action="store_true", help="Only warnings and errors")
     args = parser.parse_args()
+
+    # The worker's lines go to the console as before. The one-off commands print their own
+    # answer, and keep a record in cli.log
+    if args.command in (None, "worker"):
+        factory_log.setup("worker")
+    else:
+        factory_log.setup("cli", console=args.command == "ingest")
+        log.info("Command: %s", " ".join(sys.argv[1:]))
 
     if args.command == "reset":
         raise SystemExit(reset_command(args))

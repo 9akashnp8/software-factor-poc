@@ -184,7 +184,7 @@ def test_without_a_pat_nothing_is_checked(ado, monkeypatch, merged):
     assert ado["requests"] == []
 
 
-def test_pat_without_build_scope_still_handles_conflicts(monkeypatch, capsys):
+def test_pat_without_build_scope_still_handles_conflicts(monkeypatch, caplog):
     monkeypatch.setenv("AZURE_DEVOPS_PAT", "test-pat")
     seed_issue(store.PR_OPENED, pr_id=7)
     seed_issue(store.PR_OPENED, issue_id="issue-2", identifier="BEI-2", slot=2, pr_id=8)
@@ -202,7 +202,7 @@ def test_pat_without_build_scope_still_handles_conflicts(monkeypatch, capsys):
     check()
     assert store.get_issue("issue-2")["status"] == store.UPDATE_QUEUED
     assert issue()["status"] == store.PR_OPENED
-    assert "Build (Read) scope" in capsys.readouterr().out
+    assert "Build (Read) scope" in caplog.text
 
 
 def test_build_that_failed_before_any_job_reports_its_validation_errors(monkeypatch):

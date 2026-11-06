@@ -1,10 +1,10 @@
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
 import time
-import traceback
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,6 +26,7 @@ from software_factory import (
     config,
     dev_changes,
     evidence,
+    factory_log,
     linear,
     logs,
     pull_requests,
@@ -46,6 +47,8 @@ from software_factory.utils import (
     ssl_context,
     write_conversation_json,
 )
+
+log = logging.getLogger(__name__)
 
 # How long to pause when a rate limit gives no reset time
 DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 15 * 60
@@ -575,6 +578,27 @@ async def run_agent(
     caller's checks, which expect the status the run started in, leave it alone.
     """
     run_id = store.start_run(issue_id, phase, owner)
+    options = replace(options, **LIMITS[phase])
+    path = factory_log.transcript_path(issue_id, run_id, phase)
+    transcript = factory_log.Transcript(path)
+    transcript.write(
+        "run",
+        run_id=run_id,
+        issue_id=issue_id,
+        phase=phase,
+        owner=owner,
+        model=options.model,
+        resume=options.resume,
+        cwd=str(options.cwd) if options.cwd else None,
+        prompt=prompt,
+    )
+    # The CLI's own errors (a bad flag, an MCP server that won't start) only show on its
+    # stderr, which went to the console before it was piped here
+    options = replace(
+        options,
+        stderr=_tee(options.stderr, transcript.stderr, lambda line: log.info("claude: %s", line.rstrip())),
+    )
+    log.info("%s run %s started (%s%s), transcript %s", phase, run_id, options.model, ", resumed" if options.resume else "", path)
     result = None
     rejected_until = None
     # Stays set if the run is cancelled or interrupted before it completes. The worker
@@ -582,16 +606,19 @@ async def run_agent(
     error = "Interrupted before the run finished"
     crashed = False
     try:
-        async with ClaudeSDKClient(options=replace(options, **LIMITS[phase])) as client:
+        async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
             async for msg in client.receive_response():
+                transcript.message(msg)
                 if isinstance(msg, RateLimitEvent) and msg.rate_limit_info.status == "rejected":
                     rejected_until = msg.rate_limit_info.resets_at or time.time() + DEFAULT_RATE_LIMIT_PAUSE_SECONDS
+                    log.warning("%s run %s hit a rate limit, resets at %s", phase, run_id, rejected_until)
                 if isinstance(msg, ResultMessage):
                     result = msg
         error = None
     except Exception as e:
-        traceback.print_exc()
+        log.exception("%s run %s crashed", phase, run_id)
+        transcript.error(e)
         error = f"The {phase} run crashed: {e!r}"
         crashed = True
     finally:
@@ -599,6 +626,18 @@ async def run_agent(
         failed = result is None or result.is_error
         rate_limited = failed and (rejected_until is not None or getattr(result, "api_error_status", None) == 429)
         store.finish_run(run_id, result, error, rate_limited=rate_limited)
+        outcome = "rate limited" if rate_limited else error or describe_result(result)
+        transcript.write("end", outcome=outcome, rate_limited=rate_limited)
+        transcript.close()
+        log.log(
+            logging.WARNING if failed else logging.INFO,
+            "%s run %s ended: %s (%s turns, $%.2f)",
+            phase,
+            run_id,
+            outcome,
+            getattr(result, "num_turns", None),
+            getattr(result, "total_cost_usd", None) or 0,
+        )
         if rate_limited:
             store.pause_until(rejected_until or time.time() + DEFAULT_RATE_LIMIT_PAUSE_SECONDS)
             store.requeue(issue_id, f"The {phase} run hit a rate limit")
@@ -607,6 +646,17 @@ async def run_agent(
     if result and result.session_id:
         store.set_fields(issue_id, session_id=result.session_id)
     return None if error or rate_limited else result
+
+
+def _tee(*callbacks):
+    """One stderr callback that calls each of callbacks that is set."""
+    callbacks = [c for c in callbacks if c]
+
+    def call(line: str):
+        for callback in callbacks:
+            callback(line)
+
+    return call
 
 
 def run_succeeded(issue_id: str, phase: str, result: ResultMessage | None, during: str) -> bool:
@@ -829,13 +879,13 @@ async def triage_and_plan_issue(issue_id: str, owner: str = "cli"):
         options = planning_options(issue, worktree, ws)
         store.transition(issue_id, store.PLANNING)
     except Exception as e:
-        traceback.print_exc()
+        log.exception("Gathering context failed: %s", factory_log.describe(e))
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"Gathering context failed: {e!r}")
         return
 
     result = await run_agent(issue_id, "plan", options, bug_prompt, owner)
     check_plan_outcome(issue_id, result, during=store.PLANNING)
-    print(f"{bug_info['identifier']}: {store.get_issue(issue_id)['status']}")
+    log.info("Triage done: %s", store.get_issue(issue_id)["status"])
 
 
 async def rework_plan(issue_id: str, feedback: str | None, owner: str = "cli"):
@@ -1412,5 +1462,5 @@ async def implement_and_review(
         #     return
         await open_pull_request(issue_id)
     except Exception as e:
-        traceback.print_exc()
+        log.exception("Unexpected error: %s", factory_log.describe(e))
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"Unexpected error: {e!r}")
