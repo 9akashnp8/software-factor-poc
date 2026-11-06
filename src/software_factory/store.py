@@ -8,6 +8,7 @@ The worker is the only process that runs agents. It takes work from the queued s
 with claim_next(); the web app only moves issues into them.
 """
 
+import logging
 import os
 import sqlite3
 import time
@@ -17,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from software_factory import config
+
+log = logging.getLogger(__name__)
 
 # Absolute, so the worker and the web app share state whatever directory they start in
 WORKSPACE_DIR = Path(os.getenv("SF_WORKSPACE_DIR", "bug_workspace")).resolve()
@@ -336,7 +339,7 @@ def transition(
     """
     with _db() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT status FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        row = conn.execute("SELECT status, identifier FROM issues WHERE id = ?", (issue_id,)).fetchone()
         if row is None or (expected is not None and row["status"] not in set(expected)):
             conn.execute("ROLLBACK")
             return False
@@ -354,7 +357,17 @@ def transition(
         )
         _event(conn, issue_id, row["status"], to_status, actor, reason)
         conn.execute("COMMIT")
-        return True
+    # The issue's history, mirrored in the process's log so one file tells every issue's story
+    log.log(
+        logging.WARNING if to_status == NEEDS_ATTENTION else logging.INFO,
+        "%s: %s -> %s%s%s",
+        row["identifier"],
+        row["status"],
+        to_status,
+        f" (by {actor})" if actor else "",
+        f": {reason}" if reason else "",
+    )
+    return True
 
 
 def _free_slot_number(conn: sqlite3.Connection) -> int | None:
@@ -660,8 +673,9 @@ def recent_events(limit: int) -> list[sqlite3.Row]:
 def add_event(issue_id: str, detail: str, actor: str = "worker"):
     """Record something that happened to the issue without changing its status."""
     with _db() as conn:
-        status = conn.execute("SELECT status FROM issues WHERE id = ?", (issue_id,)).fetchone()["status"]
-        _event(conn, issue_id, status, status, actor, detail)
+        row = conn.execute("SELECT status, identifier FROM issues WHERE id = ?", (issue_id,)).fetchone()
+        _event(conn, issue_id, row["status"], row["status"], actor, detail)
+    log.info("%s: %s%s", row["identifier"], detail, f" (by {actor})" if actor != "worker" else "")
 
 
 def add_event_once(issue_id: str, detail: str, actor: str = "worker"):

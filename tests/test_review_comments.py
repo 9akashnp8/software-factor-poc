@@ -1,5 +1,6 @@
 import importlib
 import json
+import logging
 
 import anyio
 import httpx
@@ -223,7 +224,8 @@ def test_no_reviewers_configured_means_no_commands_acted_on(ado, monkeypatch):
     assert "SF_PR_REVIEWERS (which has nobody: it isn't set)" in store.events("issue-1")[-1]["detail"]
 
 
-def test_a_skipped_command_goes_in_the_history_once_and_not_on_the_pr(ado, capsys):
+def test_a_skipped_command_goes_in_the_history_once_and_not_on_the_pr(ado, caplog):
+    caplog.set_level(logging.INFO)
     seed_issue(store.PR_OPENED, pr_id=7)
     ado["threads"] = [thread(1, comment(1, "Handle None"), comment(2, "/factory fix", author=STRANGER))]
     check()
@@ -231,7 +233,8 @@ def test_a_skipped_command_goes_in_the_history_once_and_not_on_the_pr(ado, capsy
     skipped = [e for e in store.events("issue-1") if "Didn't act on" in (e["detail"] or "")]
     assert len(skipped) == 1 and "CORP\\other" in skipped[0]["detail"]
     assert ado["posted"] == []
-    assert capsys.readouterr().out.count("Didn't act on") == 1
+    # The PR watch's line, once: the second check finds it already reported
+    assert [r.name for r in caplog.records if "Didn't act on" in r.getMessage()].count("software_factory.pull_requests") == 1
 
     # The reviewer's own command later still gets the thread, comment and all
     ado["threads"][0]["comments"].append(comment(3, "/factory fix", at="2026-11-05T12:00:00Z"))

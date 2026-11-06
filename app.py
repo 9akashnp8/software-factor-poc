@@ -12,11 +12,13 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from software_factory import config, dev_changes, evidence, home, linear, metrics, reproduction, store
+from software_factory import config, dev_changes, evidence, factory_log, home, linear, metrics, reproduction, store
 from software_factory.environment import branch_name
 from software_factory.overlap import overlaps
 
 load_dotenv()
+# Requests, and the traceback of any page that fails, also go to web.log
+factory_log.setup("web")
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY")
@@ -134,6 +136,7 @@ def issue_detail(issue_id):
     plan = _read(issue_id, "plan.md")
     actions = store.allowed_actions(issue)
     events = store.events(issue_id)
+    runs = store.runs(issue_id)
     ws = store.issue_dir(issue_id)
     repro = reproduction.load(ws)
     verified = evidence.table(ws, for_pr=False)
@@ -146,7 +149,9 @@ def issue_detail(issue_id):
         # Only worth the git calls while the plan can still be approved
         overlaps=overlaps(issue) if "approve" in actions else [],
         dev_moved=dev_changes.summary(issue) if "refresh" in actions else None,
-        runs=store.runs(issue_id),
+        runs=runs,
+        # Runs from before transcripts were kept have none
+        transcripts={r["id"] for r in runs if factory_log.transcript_path(issue_id, r["id"], r["phase"]).exists()},
         events=events,
         flow=home.flow(issue, events),
         pr=_pull_request(issue),
@@ -285,6 +290,20 @@ def post_qa_question(issue_id: str):
             else:
                 store.add_event(issue_id, f"Linear label {label} added", actor=actor)
     return redirect(url_for("issue_detail", issue_id=issue_id))
+
+
+@app.route("/issue/<issue_id>/runs/<int:run_id>/transcript")
+def run_transcript(issue_id: str, run_id: int):
+    """Everything an agent run did, one JSON object per line, as the worker recorded it."""
+    _issue_or_404(issue_id)
+    run = next((r for r in store.runs(issue_id) if r["id"] == run_id), None)
+    if run is None:
+        abort(404)
+    path = factory_log.transcript_path(issue_id, run_id, run["phase"])
+    if not path.exists():
+        abort(404)
+    # Plain text, so the browser shows it rather than downloading it
+    return send_from_directory(path.parent, path.name, mimetype="text/plain")
 
 
 @app.route("/issue/<issue_id>/evidence/<name>")

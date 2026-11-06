@@ -2,13 +2,16 @@
 base branch, fail their build or get a reviewer's /factory command back to their agent, and
 follow merged fixes to deployment."""
 
+import logging
 import re
 from datetime import datetime, timedelta
 
 import httpx
 
-from software_factory import cleanup, config, deployments, review_comments, store
+from software_factory import cleanup, config, deployments, factory_log, review_comments, store
 from software_factory.utils import ado_time as _time, ssl_context
+
+log = logging.getLogger(__name__)
 
 # The project's API root; the repo API sits under it at /_apis/git/repositories/<repo>
 ADO_PROJECT_API = config.ADO_REPO_API.split("/_apis/")[0] + "/_apis"
@@ -128,9 +131,10 @@ async def check_pull_request(client: httpx.AsyncClient, issue) -> str | None:
     except httpx.HTTPStatusError as e:
         if "/_apis/build/" not in e.request.url.path or e.response.status_code not in (401, 403):
             raise
-        print(
-            f"{issue['identifier']}: can't read PR {issue['pr_id']}'s builds. Failed builds go "
-            "unnoticed until AZURE_DEVOPS_PAT has the Build (Read) scope."
+        log.warning(
+            "Can't read PR %s's builds. Failed builds go unnoticed until AZURE_DEVOPS_PAT has "
+            "the Build (Read) scope.",
+            issue["pr_id"],
         )
     return await review_comments.check(client, issue)
 
@@ -240,18 +244,20 @@ async def check_pull_requests():
     try:
         client = ado_client()
     except RuntimeError as e:
-        print(f"Can't check PRs: {e}")
+        log.warning("Can't check PRs: %s", e)
         return
     async with client:
         for issue in issues:
-            try:
-                if outcome := await check_pull_request(client, issue):
-                    print(f"{issue['identifier']}: PR {issue['pr_id']} {outcome}")
-            except httpx.HTTPError as e:
-                print(f"{issue['identifier']}: couldn't check PR {issue['pr_id']}: {e}")
+            with factory_log.issue_context(issue["identifier"], "pr-check"):
+                try:
+                    if outcome := await check_pull_request(client, issue):
+                        log.info("PR %s %s", issue["pr_id"], outcome)
+                except httpx.HTTPError as e:
+                    log.warning("Couldn't check PR %s: %s", issue["pr_id"], e)
         for issue in awaiting_deploy:
-            try:
-                if outcome := await check_deploy(client, issue):
-                    print(f"{issue['identifier']}: {outcome}")
-            except httpx.HTTPError as e:
-                print(f"{issue['identifier']}: couldn't check its deploy: {e}")
+            with factory_log.issue_context(issue["identifier"], "deploy-check"):
+                try:
+                    if outcome := await check_deploy(client, issue):
+                        log.info("%s", outcome)
+                except httpx.HTTPError as e:
+                    log.warning("Couldn't check its deploy: %s", e)

@@ -296,7 +296,7 @@
         <div class="sf-section-head"><h2 id="runs-heading">Agent runs</h2></div>
         <div class="sf-panel sf-table-wrap" style="overflow: hidden">
             <table class="sf-table">
-                <thead><tr><th scope="col">Phase</th><th scope="col">Started</th><th scope="col">Outcome</th><th scope="col" class="is-num">Turns</th><th scope="col" class="is-num">Cost</th></tr></thead>
+                <thead><tr><th scope="col">Phase</th><th scope="col">Started</th><th scope="col">Outcome</th><th scope="col" class="is-num">Turns</th><th scope="col" class="is-num">Cost</th><th scope="col">Transcript</th></tr></thead>
                 <tbody>
                 {% for run in runs %}
                 <tr>
@@ -309,6 +309,7 @@
                     </td>
                     <td class="sf-mono is-num">{{ run.num_turns if run.num_turns is not none else '' }}</td>
                     <td class="sf-mono is-num">{{ '$%.2f'|format(run.cost_usd) if run.cost_usd is not none else '' }}</td>
+                    <td>{% if run.id in transcripts %}<a href="{{ url_for('run_transcript', issue_id=issue.id, run_id=run.id) }}">view</a>{% endif %}</td>
                 </tr>
                 {% endfor %}
                 </tbody>
