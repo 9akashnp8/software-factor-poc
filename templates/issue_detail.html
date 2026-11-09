@@ -303,9 +303,8 @@
                     <td>{{ run.phase }}</td>
                     <td class="sf-mono sf-muted" title="{{ run.started_at }}">{{ run.started_at | ago }} ago</td>
                     <td>
-                        {% if run.error %}{{ ui.status("attn", "failed") }}<span class="sf-table-error">{{ run.error }}</span>
-                        {% elif run.ended_at %}{{ ui.status("attn" if run.is_error else "done", run.subtype or "finished") }}
-                        {% else %}{{ ui.status("run", "running") }}{% endif %}
+                        {% set okind, olabel = outcomes[run.id] %}{{ ui.status(okind, olabel) }}
+                        {% if run.error %}<span class="sf-table-error">{{ run.error }}</span>{% endif %}
                     </td>
                     <td class="sf-mono is-num">{{ run.num_turns if run.num_turns is not none else '' }}</td>
                     <td class="sf-mono is-num">{{ '$%.2f'|format(run.cost_usd) if run.cost_usd is not none else '' }}</td>

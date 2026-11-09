@@ -13,6 +13,7 @@ from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from software_factory import config, dev_changes, evidence, factory_log, home, linear, metrics, reproduction, store
+from software_factory import run_transcript as transcripts
 from software_factory.environment import branch_name
 from software_factory.overlap import overlaps
 
@@ -59,6 +60,10 @@ def render_md(text: str) -> Markup:
     # issue.md holds QA text and users' chat messages, and Markdown passes raw HTML
     # through, so strip anything that could run script before marking it safe
     return Markup(nh3.clean(_MARKDOWN.render(text)))
+
+
+# Agents write their messages, plans and reports in Markdown
+app.add_template_filter(render_md, "md")
 
 
 def _read(issue_id: str, name: str) -> str | None:
@@ -150,6 +155,8 @@ def issue_detail(issue_id):
         overlaps=overlaps(issue) if "approve" in actions else [],
         dev_moved=dev_changes.summary(issue) if "refresh" in actions else None,
         runs=runs,
+        # A planning run that saved its plan ends the way the CLI reports an error
+        outcomes={r["id"]: transcripts.outcome(r, events) for r in runs},
         # Runs from before transcripts were kept have none
         transcripts={r["id"] for r in runs if factory_log.transcript_path(issue_id, r["id"], r["phase"]).exists()},
         events=events,
@@ -292,16 +299,59 @@ def post_qa_question(issue_id: str):
     return redirect(url_for("issue_detail", issue_id=issue_id))
 
 
-@app.route("/issue/<issue_id>/runs/<int:run_id>/transcript")
-def run_transcript(issue_id: str, run_id: int):
-    """Everything an agent run did, one JSON object per line, as the worker recorded it."""
-    _issue_or_404(issue_id)
+def _run_or_404(issue_id: str, run_id: int):
     run = next((r for r in store.runs(issue_id) if r["id"] == run_id), None)
     if run is None:
         abort(404)
     path = factory_log.transcript_path(issue_id, run_id, run["phase"])
     if not path.exists():
         abort(404)
+    return run, path
+
+
+def _clock(iso: str | None) -> str:
+    """'6 Nov, 08:20 UTC'"""
+    if not iso:
+        return ""
+    moment = datetime.fromisoformat(iso)
+    return f"{moment.day} {moment:%b}, {moment:%H:%M:%S} UTC"
+
+
+@app.route("/issue/<issue_id>/runs/<int:run_id>/transcript")
+def run_transcript(issue_id: str, run_id: int):
+    """Everything an agent run did: what the agent said, each tool call and its result."""
+    issue = _issue_or_404(issue_id)
+    run, path = _run_or_404(issue_id, run_id)
+    ws = store.issue_dir(issue_id)
+    events = store.events(issue_id)
+    transcript = transcripts.parse(path, ws)
+    screenshots = evidence.screenshots(ws)
+    images = {c.id: name for c in transcript["calls"] if (name := transcripts.evidence_image(c, ws, screenshots))}
+    runs = store.runs(issue_id)
+    return render_template(
+        "run_transcript.html",
+        issue=issue,
+        run=run,
+        t=transcript,
+        outcome=transcripts.outcome(run, events),
+        view="all" if request.args.get("view") == "all" else "steps",
+        images=images,
+        started=_clock(run["started_at"]),
+        ended=_clock(run["ended_at"]),
+        # Newest first, the way the issue page's history reads
+        runs=[
+            {"run": r, "outcome": transcripts.outcome(r, events),
+             "has_transcript": factory_log.transcript_path(issue_id, r["id"], r["phase"]).exists()}
+            for r in reversed(runs)
+        ],
+    )
+
+
+@app.route("/issue/<issue_id>/runs/<int:run_id>/transcript.jsonl")
+def run_transcript_raw(issue_id: str, run_id: int):
+    """The transcript file as the worker wrote it, one JSON object per line."""
+    _issue_or_404(issue_id)
+    _, path = _run_or_404(issue_id, run_id)
     # Plain text, so the browser shows it rather than downloading it
     return send_from_directory(path.parent, path.name, mimetype="text/plain")
 

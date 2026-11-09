@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+
+{% block title %}{{ issue.identifier }} run {{ run.id }}{% endblock %}
+
+{% macro output_block(call, label="Output") -%}
+    <div class="sf-tx-label">
+        <span>{{ "Error" if call.is_error else label }}</span>
+        {% if call.output_lines > 1 %}<span class="sf-mono">{{ call.output_lines }} lines</span>{% endif %}
+        {% if call.images %}<span>{{ call.images }} image{{ "s" if call.images > 1 }}</span>{% endif %}
+        {% if call.output %}<button type="button" class="sf-btn sf-btn-ghost sf-btn-sm sf-btn-icon-only sf-tx-copy" aria-label="Copy {{ label | lower }}" data-copy>{{ ui.icon("copy", 14) }}</button>{% endif %}
+    </div>
+    {% if call.output %}
+    <pre class="sf-tx-pre{% if call.is_error %} is-error{% endif %}" dir="auto" data-clamp>{{ call.output }}</pre>
+    {% if call.truncated %}<p class="sf-tx-hint">{{ "{:,}".format(call.truncated) }} more characters in the raw file.</p>{% endif %}
+    {% elif not call.images %}
+    <p class="sf-tx-hint">{{ "Still running." if not call.done_at else "No output." }}</p>
+    {% endif %}
+{%- endmacro %}
+
+{% macro tool_call(call) -%}
+{% set KIND_ICON = {"shell": "terminal", "edit": "pencil", "write": "file-plus", "read": "file", "search": "search", "browser": "globe", "agent": "person", "other": "tool"} %}
+<details class="sf-tx-call" id="{{ call.anchor }}"{% if call.is_error %} data-error{% endif %}>
+    <summary>
+        <span class="sf-tx-call-icon">{{ ui.icon(KIND_ICON[call.kind]) }}</span>
+        <span class="sf-tx-call-label sf-mono">{{ call.label }}</span>
+        <span class="sf-tx-call-title{% if call.kind in ('edit', 'write', 'read') %} sf-mono{% endif %}">{{ call.title }}</span>
+        {% if call.added %}<span class="sf-mono sf-tx-add">+{{ call.added }}</span>{% endif %}
+        {% if call.removed %}<span class="sf-mono sf-tx-del">−{{ call.removed }}</span>{% endif %}
+        {% if call.is_error %}{{ ui.status("attn", "error") }}{% endif %}
+        <span class="sf-tx-call-time sf-mono">{{ call.duration }}</span>
+        <span class="sf-tx-chev">{{ ui.icon("chevron-right", 14) }}</span>
+    </summary>
+    <div class="sf-tx-call-body">
+        {% if call.kind == "shell" %}
+            <div class="sf-tx-label"><span>Command</span><button type="button" class="sf-btn sf-btn-ghost sf-btn-sm sf-btn-icon-only sf-tx-copy" aria-label="Copy command" data-copy>{{ ui.icon("copy", 14) }}</button></div>
+            <pre class="sf-tx-pre" data-clamp>{{ call.input.command }}</pre>
+            {{ output_block(call) }}
+        {% elif call.kind == "edit" %}
+            {% if call.diff %}
+            <div class="sf-tx-diff sf-mono" role="table" aria-label="Changes to {{ call.title }}">
+                {% for sign, line in call.diff %}
+                {% if sign == "…" %}<div class="sf-tx-diff-gap" role="row"><span role="cell">⋯</span></div>
+                {% else %}<div class="sf-tx-diff-line{% if sign == '-' %} is-del{% elif sign == '+' %} is-add{% endif %}" role="row"><span class="sf-tx-diff-sign" role="cell" aria-label="{{ {'-': 'removed', '+': 'added', ' ': 'unchanged'}[sign] }}">{{ "−" if sign == "-" else sign }}</span><span role="cell">{{ line }}</span></div>{% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if call.is_error or not call.diff %}{{ output_block(call) }}{% endif %}
+        {% elif call.kind == "write" %}
+            <div class="sf-tx-label"><span>Content</span><span class="sf-mono">{{ call.added }} lines</span></div>
+            <pre class="sf-tx-pre" data-clamp>{{ call.input.content }}</pre>
+            {% if call.is_error %}{{ output_block(call) }}{% endif %}
+        {% elif call.kind == "read" and images.get(call.id) %}
+            <a href="{{ url_for('evidence_file', issue_id=issue.id, name=images[call.id]) }}"><img class="sf-tx-shot" src="{{ url_for('evidence_file', issue_id=issue.id, name=images[call.id]) }}" alt="Screenshot {{ images[call.id] }}" loading="lazy"></a>
+        {% elif call.kind == "read" %}
+            {{ output_block(call, "Contents") }}
+        {% elif call.kind == "agent" %}
+            <div class="sf-tx-label"><span>Prompt</span></div>
+            <pre class="sf-tx-pre" data-clamp>{{ call.input.prompt }}</pre>
+            {% if call.children %}
+            <div class="sf-tx-label"><span>What the agent did</span></div>
+            <div class="sf-tx-children">
+                {% for child in call.children %}
+                {% if child.kind == "text" %}<div class="sf-prose sf-tx-child-text">{{ child.text | md }}</div>
+                {% else %}{{ tool_call(child.call) }}{% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+            {{ output_block(call, "Answer") }}
+        {% else %}
+            {% if call.input %}
+            <div class="sf-tx-label"><span>Input</span></div>
+            <dl class="sf-tx-input">
+                {% for key, value in call.input.items() %}
+                <dt>{{ key }}</dt><dd>{% if value is string %}{{ value }}{% else %}<span class="sf-mono">{{ value | tojson }}</span>{% endif %}</dd>
+                {% endfor %}
+            </dl>
+            {% endif %}
+            {{ output_block(call) }}
+        {% endif %}
+    </div>
+</details>
+{%- endmacro %}
+
+{% block content %}
+{% set kind, label = outcome %}
+{% set result = t.result or {} %}
+<a class="sf-back" href="{{ url_for('issue_detail', issue_id=issue.id) }}">{{ ui.icon("arrow-right", 14) }}<span class="sf-mono">{{ issue.identifier }}</span></a>
+
+<div class="sf-tx-head">
+    <div class="sf-issue-head">
+        <div class="sf-issue-meta">
+            <span class="sf-mono">run {{ run.id }}</span>
+            {{ ui.status(kind, label, tinted=true) }}
+            <span class="sf-muted sf-mono" title="{{ run.started_at }}">{{ started }} · {{ run.started_at | ago }} ago</span>
+        </div>
+        <h1>{{ run.phase | capitalize }} run</h1>
+        {% if issue.title %}<p class="sf-tx-issue">{{ issue.title }}</p>{% endif %}
+    </div>
+    <a class="sf-btn sf-btn-secondary" href="{{ url_for('run_transcript_raw', issue_id=issue.id, run_id=run.id) }}">{{ ui.icon("download") }}Raw JSONL</a>
+</div>
+
+{% if t.errors %}
+{% set crash = t.errors[-1] %}
+<div class="sf-banner sf-banner-danger sf-tx-banner" role="alert">
+    {{ ui.icon("alert") }}
+    <div class="sf-banner-body">
+        <p><strong>The run crashed at <span class="sf-mono">{{ crash.t }}</span>.</strong>Everything up to that point is below.</p>
+        <div class="sf-raw">{{ crash.error }}</div>
+        {% if crash.traceback %}<details class="sf-tx-trace"><summary>Show traceback</summary><pre class="sf-tx-pre is-error">{{ crash.traceback }}</pre></details>{% endif %}
+    </div>
+</div>
+{% elif run.error %}
+<div class="sf-banner sf-banner-danger sf-tx-banner" role="alert">
+    {{ ui.icon("alert") }}
+    <div class="sf-banner-body"><p><strong>The run failed.</strong></p><div class="sf-raw">{{ run.error }}</div></div>
+</div>
+{% elif not run.ended_at %}
+<div class="sf-banner sf-tx-banner" role="status">
+    {{ ui.icon("clock") }}
+    <div class="sf-banner-body">The agent is still working. Reload to see what it has done since.</div>
+</div>
+{% elif not t.result %}
+<div class="sf-banner sf-banner-warn sf-tx-banner" role="status">
+    {{ ui.icon("alert") }}
+    <div class="sf-banner-body">The run stopped without a result. The transcript ends at <span class="sf-mono">{{ t.elapsed }}</span>.</div>
+</div>
+{% endif %}
+
+<div class="sf-tiles sf-tx-tiles">
+    <div class="sf-tile is-static">
+        <span class="sf-tile-caption">Duration</span>
+        <span class="sf-tile-n sf-mono">{{ t.duration or t.elapsed or "—" }}</span>
+        <span class="sf-tile-caption">{% if t.api_duration %}{{ t.api_duration }} waiting on the model{% else %}&nbsp;{% endif %}</span>
+    </div>
+    <div class="sf-tile is-static">
+        <span class="sf-tile-caption">Turns</span>
+        <span class="sf-tile-n sf-mono">{{ result.get("num_turns") if result.get("num_turns") is not none else "—" }}</span>
+        <span class="sf-tile-caption">{{ t.texts }} message{{ "s" if t.texts != 1 }} from the agent</span>
+    </div>
+    <div class="sf-tile is-static">
+        <span class="sf-tile-caption">Tool calls</span>
+        <span class="sf-tile-n sf-mono">{{ t.calls | length }}</span>
+        <span class="sf-tile-caption">{% for name, n in t.tools[:2] %}{{ n }} {{ name }}{{ ", " if not loop.last }}{% else %}&nbsp;{% endfor %}</span>
+    </div>
+    <div class="sf-tile is-static">
+        <span class="sf-tile-caption">Tool errors</span>
+        <span class="sf-tile-n sf-mono">{{ t.error_calls | length }}</span>
+        <span class="sf-tile-caption">{% for name, n in t.error_tools %}{{ n }} {{ name }}{{ ", " if not loop.last }}{% else %}None{% endfor %}</span>
+    </div>
+    <div class="sf-tile is-static">
+        <span class="sf-tile-caption">Cost</span>
+        <span class="sf-tile-n sf-mono">{{ "$%.2f" | format(result.get("total_cost_usd")) if result.get("total_cost_usd") is not none else "—" }}</span>
+        <span class="sf-tile-caption">{% if t.usage.output %}{{ "{:,}".format(t.usage.output) }} tokens out{% else %}&nbsp;{% endif %}</span>
+    </div>
+</div>
+
+<div class="sf-tx-layout">
+<div class="sf-tx-main">
+
+    <div class="sf-tx-toolbar">
+        <nav class="sf-tx-seg" aria-label="View">
+            <a href="{{ url_for('run_transcript', issue_id=issue.id, run_id=run.id) }}"{% if view == "steps" %} aria-current="page"{% endif %}>Steps</a>
+            <a href="{{ url_for('run_transcript', issue_id=issue.id, run_id=run.id, view='all') }}"{% if view == "all" %} aria-current="page"{% endif %}>All events <span class="sf-mono">{{ t.events | length }}</span></a>
+        </nav>
+        {% if view == "steps" and t.error_calls %}
+        <button type="button" class="sf-btn sf-btn-secondary" data-next-error><span class="sf-tx-mark sf-k-attn">{{ ui.status_icon("attn") }}</span>Next error <span class="sf-mono sf-muted" data-error-count>{{ t.error_calls | length }}</span></button>
+        {% endif %}
+        <label class="sf-input sf-tx-search">
+            {{ ui.icon("search") }}
+            <input class="sf-input-control" type="search" placeholder="Search commands, files and output" aria-label="Search the transcript" data-search>
+            <kbd class="sf-kbd">/</kbd>
+        </label>
+        <span class="sf-tx-found sf-muted" data-found aria-live="polite"></span>
+        {% if view == "steps" %}
+        <button type="button" class="sf-btn sf-btn-ghost sf-tx-expand" data-expand aria-pressed="false">Expand all <kbd class="sf-kbd">E</kbd></button>
+        {% endif %}
+    </div>
+
+    {% if view == "all" %}
+    <div class="sf-panel sf-table-wrap">
+        <table class="sf-table sf-tx-events">
+            <thead><tr><th scope="col" class="is-num">#</th><th scope="col">Time</th><th scope="col">Event</th><th scope="col">Detail</th></tr></thead>
+            <tbody>
+            {% for e in t.events %}
+            <tr data-row{% if e.is_error %} class="is-error"{% endif %}>
+                <td class="sf-mono sf-muted is-num">{{ e.n }}</td>
+                <td class="sf-mono sf-muted">{{ e.t }}</td>
+                <td class="sf-mono">{{ e.type }}</td>
+                <td>
+                    <details class="sf-tx-raw">
+                        <summary><span class="sf-tx-raw-detail">{{ e.detail or "—" }}</span><span class="sf-tx-raw-json sf-mono">JSON</span></summary>
+                        <pre class="sf-tx-pre">{{ e.raw }}</pre>
+                        {% if e.cut %}<p class="sf-tx-hint">{{ "{:,}".format(e.cut) }} more characters in the raw file.</p>{% endif %}
+                    </details>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <ol class="sf-tx-steps">
+        <li class="sf-tx-step" data-step>
+            <span class="sf-tx-t sf-mono">+0:00</span>
+            <section class="sf-panel sf-tx-card" aria-labelledby="prompt-heading">
+                <div class="sf-tx-card-head">
+                    <h2 id="prompt-heading">Prompt</h2>
+                    <span class="sf-muted">from the {{ t.head.owner or "worker" }}{% if t.resumed %}, resuming session <span class="sf-mono">{{ t.head.resume[:8] }}</span>{% endif %}</span>
+                    <span class="sf-mono sf-muted sf-tx-push">{{ "{:,}".format(t.prompt | length) }} chars</span>
+                </div>
+                <div class="sf-tx-card-body sf-tx-prompt" data-clamp>{{ t.prompt }}</div>
+            </section>
+        </li>
+
+        <li class="sf-tx-step" data-step>
+            <span class="sf-tx-t sf-mono"></span>
+            <p class="sf-tx-sys">
+                {{ ui.icon("rework", 14) }}
+                <span>Session <span class="sf-mono">{{ (t.session_id or "")[:8] }}</span>{% if t.model %} on <span class="sf-mono">{{ t.model }}</span>{% endif %}</span>
+                {% if t.rate %}<span aria-hidden="true">·</span><span>Rate limit {{ t.rate }}</span>{% endif %}
+            </p>
+        </li>
+
+        {% for step in t.steps %}
+        {% if step.kind == "text" %}
+        <li class="sf-tx-step" id="{{ step.anchor }}" data-step>
+            <span class="sf-tx-t sf-mono">{{ step.t }}</span>
+            <div class="sf-prose sf-tx-text">{{ step.text | md }}</div>
+        </li>
+        {% elif step.kind == "tools" %}
+        {% set g = step.group %}
+        <li class="sf-tx-step" data-step>
+            <span class="sf-tx-t sf-mono"></span>
+            <details class="sf-tx-group"{% if g.errors %} data-error{% endif %}>
+                <summary>
+                    <span class="sf-tx-chev">{{ ui.icon("chevron-right", 14) }}</span>
+                    <span class="sf-tx-group-sum">{{ g.summary }}</span>
+                    <span class="sf-tx-group-titles">{{ g.titles }}</span>
+                    {% if g.errors %}{{ ui.status("attn", g.errors ~ (" error" if g.errors == 1 else " errors")) }}{% endif %}
+                    <span class="sf-tx-call-time sf-mono">{{ g.duration }}</span>
+                </summary>
+                <div class="sf-panel sf-tx-calls">
+                    {% for call in g.calls %}{{ tool_call(call) }}{% endfor %}
+                </div>
+            </details>
+        </li>
+        {% elif step.kind == "plan" %}
+        <li class="sf-tx-step" id="{{ step.call.anchor }}" data-step>
+            <span class="sf-tx-t sf-mono">{{ step.t }}</span>
+            <section class="sf-panel sf-tx-card" aria-label="Plan">
+                <div class="sf-tx-card-head">
+                    <h2>Plan</h2>
+                    <span class="sf-muted">presented with ExitPlanMode</span>
+                    <a class="sf-tx-push" href="{{ url_for('issue_detail', issue_id=issue.id) }}">Review it on {{ issue.identifier }}{{ ui.icon("arrow-right", 14) }}</a>
+                </div>
+                <div class="sf-prose sf-tx-card-body" data-clamp>{{ step.text | md }}</div>
+                {% if step.stopped %}
+                <div class="sf-tx-card-foot">{{ ui.status("review", "Plan saved for review") }}<span class="sf-muted">The worker kept the plan and stopped the run here.</span></div>
+                {% elif step.call.output %}
+                <div class="sf-tx-card-foot is-stacked">
+                    <span class="sf-muted">The worker sent it back:</span>
+                    <pre class="sf-tx-pre">{{ step.call.output }}</pre>
+                </div>
+                {% endif %}
+            </section>
+        </li>
+        {% else %}
+        <li class="sf-tx-step" data-step>
+            <span class="sf-tx-t sf-mono">{{ step.t }}</span>
+            <p class="sf-tx-sys">{{ ui.icon("alert", 14) }}<span>{{ step.text }}</span></p>
+        </li>
+        {% endif %}
+        {% endfor %}
+
+        {% if t.result %}
+        {% set out = t.structured %}
+        {% set v = out.verification if out.verification is mapping else {} %}
+        <li class="sf-tx-step" data-step>
+            <span class="sf-tx-t sf-mono">{{ t.result_t }}</span>
+            <section class="sf-panel sf-tx-card" aria-labelledby="result-heading">
+                <div class="sf-tx-card-head">
+                    <h2 id="result-heading">Result</h2>
+                    {{ ui.status(kind, label) }}
+                    <span class="sf-mono sf-muted sf-tx-push">{% if result.get("num_turns") is not none %}{{ result.get("num_turns") }} turns · {% endif %}{% if result.get("total_cost_usd") is not none %}${{ "%.2f" | format(result.get("total_cost_usd")) }} · {% endif %}{{ t.duration or t.elapsed }}</span>
+                </div>
+                {% if label == "plan saved" %}
+                <p class="sf-tx-card-body sf-muted">The CLI reports <span class="sf-mono">{{ result.subtype }}</span> for this run: the worker stops a planning run by refusing ExitPlanMode once it has saved the plan.</p>
+                {% endif %}
+                {% if v %}
+                <dl class="sf-tx-checks">
+                    <div><dt>Verification</dt><dd>{% set vs = v.status or "unknown" %}{{ ui.status({"passed": "done", "failed": "attn"}.get(vs, "ship"), vs.replace("_", " ")) }}</dd></div>
+                    {% if v.test is mapping %}<div><dt>Test</dt><dd>{{ v.test.after or v.test.command or "" }}</dd></div>{% endif %}
+                    {% if v.replay is mapping %}<div><dt>Replay</dt><dd>{{ v.replay.result or "" }}</dd></div>{% endif %}
+                    {% if v.browser is mapping %}<div><dt>Browser</dt><dd>{{ ("Passed. " if v.browser.passed else "Not passed. " if v.browser.done else "Not run. ") }}{{ v.browser.result or "" }}</dd></div>{% endif %}
+                    {% if v.notes %}<div><dt>Notes</dt><dd>{{ v.notes }}</dd></div>{% endif %}
+                </dl>
+                {% endif %}
+                {% set report = out.report or (result.result if not out else "") %}
+                {% if report %}
+                <div class="sf-prose sf-tx-card-body" data-clamp>{{ report | md }}</div>
+                {% endif %}
+            </section>
+        </li>
+        {% endif %}
+    </ol>
+    <p class="sf-tx-none sf-muted" data-none hidden>Nothing in this run matches.</p>
+    {% endif %}
+
+    {% if t.stderr %}
+    <details class="sf-panel sf-pr-more sf-tx-stderr">
+        <summary>The CLI's stderr: {{ t.stderr | length }} line{{ "s" if t.stderr | length != 1 }}</summary>
+        <pre class="sf-tx-pre">{{ t.stderr | join("\n") }}</pre>
+    </details>
+    {% endif %}
+</div>
+
+<aside class="sf-tx-rail" aria-label="Run details">
+    <section class="sf-panel">
+        <h2 class="sf-overline sf-tx-rail-head">Run</h2>
+        <dl class="sf-tx-facts">
+            <dt>Phase</dt><dd>{{ run.phase }}</dd>
+            <dt>Started</dt><dd class="sf-mono">{{ started }}</dd>
+            {% if ended %}<dt>Ended</dt><dd class="sf-mono">{{ ended }}</dd>{% endif %}
+            {% if t.model %}<dt>Model</dt><dd class="sf-mono">{{ t.model }}</dd>{% endif %}
+            {% if t.session_id %}<dt>Session</dt><dd><span class="sf-mono" title="{{ t.session_id }}">{{ t.session_id[:8] }}</span>{% if t.resumed %} <span class="sf-muted">resumed</span>{% endif %}</dd>{% endif %}
+            {% if t.worktree %}<dt>Worktree</dt><dd class="sf-mono" title="{{ t.cwd }}">{{ t.worktree }}</dd>{% endif %}
+        </dl>
+        {% if t.usage.output is not none %}
+        <dl class="sf-tx-tokens">
+            <dt>Output tokens</dt><dd class="sf-mono">{{ "{:,}".format(t.usage.output) }}</dd>
+            {% if t.usage.thinking %}<dt class="is-sub">of which thinking</dt><dd class="sf-mono sf-muted">{{ "{:,}".format(t.usage.thinking) }}</dd>{% endif %}
+            {% if t.usage.cache_read is not none %}<dt>Cache read</dt><dd class="sf-mono">{{ "{:,}".format(t.usage.cache_read) }}</dd>{% endif %}
+            {% if t.usage.cache_write is not none %}<dt>Cache write</dt><dd class="sf-mono">{{ "{:,}".format(t.usage.cache_write) }}</dd>{% endif %}
+            {% if t.usage.input is not none %}<dt>Input</dt><dd class="sf-mono">{{ "{:,}".format(t.usage.input) }}</dd>{% endif %}
+        </dl>
+        {% endif %}
+    </section>
+
+    {% if t.outline and view == "steps" %}
+    <nav class="sf-panel" aria-labelledby="jump-heading">
+        <h2 class="sf-overline sf-tx-rail-head" id="jump-heading">Jump to</h2>
+        <ol class="sf-tx-links">
+            {% for step in t.outline %}
+            <li><a href="#{{ step.anchor }}"><span class="sf-mono sf-muted">{{ step.t }}</span><span class="sf-tx-ell">{{ step.text | striptags | truncate(120) }}</span></a></li>
+            {% endfor %}
+        </ol>
+    </nav>
+    {% endif %}
+
+    {% if t.tools %}
+    {% set most = t.tools[0][1] %}
+    <section class="sf-panel">
+        <h2 class="sf-overline sf-tx-rail-head">Tools used</h2>
+        <ul class="sf-tx-bars">
+            {% for name, n in t.tools %}
+            <li><span class="sf-mono sf-tx-ell">{{ name }}</span><span class="sf-meter-bar"><span style="width: {{ (100 * n / most) | round | int }}%"></span></span><span class="sf-mono">{{ n }}</span></li>
+            {% endfor %}
+        </ul>
+        {% if t.error_calls %}<p class="sf-tx-rail-note">{{ t.error_calls | length }} call{{ "s" if t.error_calls | length != 1 }} failed. Use Next error to step through them.</p>{% endif %}
+    </section>
+    {% endif %}
+
+    <nav class="sf-panel" aria-labelledby="runs-heading">
+        <h2 class="sf-overline sf-tx-rail-head" id="runs-heading">Runs on {{ issue.identifier }}</h2>
+        <ol class="sf-tx-links">
+            {% for item in runs %}
+            {% set r = item.run %}
+            {% set rk, rl = item.outcome %}
+            <li>
+                {% if item.has_transcript %}<a href="{{ url_for('run_transcript', issue_id=issue.id, run_id=r.id) }}"{% if r.id == run.id %} aria-current="page"{% endif %}>
+                {% else %}<span class="sf-tx-link-off">{% endif %}
+                    <span class="sf-tx-mark sf-k-{{ rk }}">{{ ui.status_icon(rk) }}</span>
+                    <span class="sf-mono">{{ r.id }}</span>
+                    <span class="sf-tx-ell">{{ r.phase }}</span>
+                    <span class="sf-muted sf-tx-push">{{ rl }}</span>
+                {% if item.has_transcript %}</a>{% else %}</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ol>
+    </nav>
+</aside>
+</div>
+<script src="{{ url_for('static', filename='transcript.js') }}"></script>
+{% endblock %}
