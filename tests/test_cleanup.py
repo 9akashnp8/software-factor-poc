@@ -91,3 +91,23 @@ def test_releasing_an_issue_that_never_started_touches_nothing(steps):
     assert anyio.run(cleanup.release, "issue-1")
     assert steps == []
     assert store.get_issue("issue-1")["status"] == store.RELEASED
+
+
+def test_remove_worktree_deletes_what_git_left_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "WORKTREE_DIR", tmp_path)
+    leftover = tmp_path / "BEI-1"
+    (leftover / ".venv").mkdir(parents=True)
+    (leftover / ".venv" / "pyvenv.cfg").write_text("home = nowhere")
+    (leftover / ".venv" / "pyvenv.cfg").chmod(0o444)
+    git_calls = []
+
+    def fake_git(*args):
+        git_calls.append(args)
+        if args[0] == "worktree" and args[1] == "remove":
+            raise cleanup.subprocess.CalledProcessError(128, args, stderr="not a working tree")
+
+    monkeypatch.setattr(cleanup, "_git", fake_git)
+    cleanup.remove_worktree("BEI-1")
+
+    assert not leftover.exists()
+    assert git_calls[-1] == ("worktree", "prune")

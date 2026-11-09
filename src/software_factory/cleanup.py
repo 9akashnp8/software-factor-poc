@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 from psycopg import sql
 
 from software_factory import config, deployments, linear, store
-from software_factory.environment import branch_name, database_name, stop_servers, worktree_path
+from software_factory.environment import branch_name, database_name, force_rmtree, stop_servers, worktree_path
 
 
 def _target_env() -> dict:
@@ -56,7 +56,15 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 def remove_worktree(identifier: str):
     path = worktree_path(identifier)
     if path.exists():
-        _git("worktree", "remove", "--force", str(path))
+        try:
+            _git("worktree", "remove", "--force", str(path))
+        except subprocess.CalledProcessError:
+            # Git gives up on a file something holds open (a .venv on Windows) or on a
+            # directory it no longer knows, leaving the rest. Delete what's left; a file
+            # still held open raises here, and the teardown retries it.
+            pass
+        if path.exists():
+            force_rmtree(path)
     _git("worktree", "prune")
 
 
