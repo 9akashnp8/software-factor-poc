@@ -165,7 +165,9 @@ def test_the_page_links_each_runs_transcript(monkeypatch, client):  # noqa: F811
     http = client
     page = http.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
     assert "/issue/issue-1/runs/1/transcript" in page
-    served = http.get("/issue/issue-1/runs/1/transcript", headers=AUTH)
+    shown = http.get("/issue/issue-1/runs/1/transcript", headers=AUTH)
+    assert shown.status_code == 200 and shown.mimetype == "text/html" and "Plan run" in shown.get_data(as_text=True)
+    served = http.get("/issue/issue-1/runs/1/transcript.jsonl", headers=AUTH)
     assert served.status_code == 200 and served.mimetype == "text/plain"
     assert json.loads(served.get_data(as_text=True).splitlines()[0])["type"] == "run"
     assert http.get("/issue/issue-1/runs/2/transcript", headers=AUTH).status_code == 404

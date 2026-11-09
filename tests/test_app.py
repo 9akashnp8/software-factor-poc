@@ -386,3 +386,41 @@ def test_metrics_page(client, ws):
     assert 'aria-current="page">30 days' in page
     assert 'aria-current="page">7 days' in client.get("/metrics?days=7", headers=AUTH).get_data(as_text=True)
     assert 'aria-current="page">30 days' in client.get("/metrics?days=5", headers=AUTH).get_data(as_text=True)
+
+
+def transcript_run(phase="implement", *lines: dict) -> int:
+    run_id = store.start_run("issue-1", phase, "worker")
+    path = web.factory_log.transcript_path("issue-1", run_id, phase)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    head = {"at": "2026-11-06T08:20:00.000+00:00", "type": "run", "phase": phase, "model": "sonnet", "prompt": "Implement it"}
+    path.write_text("\n".join(json.dumps(line) for line in (head, *lines)) + "\n", encoding="utf-8")
+    return run_id
+
+
+def test_transcript_page_shows_the_agents_steps(client, ws):
+    run_id = transcript_run(
+        "implement",
+        {"at": "2026-11-06T08:20:09.000+00:00", "type": "AssistantMessage", "content": [{"text": "Fixing it <script>alert(1)</script>"}]},
+        {"at": "2026-11-06T08:20:10.000+00:00", "type": "AssistantMessage", "content": [{"id": "t1", "name": "Bash", "input": {"command": "pytest", "description": "Run the tests"}}]},
+        {"at": "2026-11-06T08:20:14.000+00:00", "type": "UserMessage", "content": [{"tool_use_id": "t1", "content": "1 failed", "is_error": True}]},
+    )
+    page = client.get(f"/issue/issue-1/runs/{run_id}/transcript", headers=AUTH).get_data(as_text=True)
+    assert "Implement run" in page and "Fixing it" in page and "<script>alert(1)" not in page
+    assert "Ran 1 command" in page and "Run the tests" in page and "1 error" in page
+    assert "The run stopped without a result" not in page  # still going: no end line, no ended_at
+    assert "The agent is still working" in page
+    every = client.get(f"/issue/issue-1/runs/{run_id}/transcript?view=all", headers=AUTH).get_data(as_text=True)
+    assert "AssistantMessage" in every and "error from Bash: Run the tests" in every
+
+
+def test_raw_transcript_is_served_as_text(client, ws):
+    run_id = transcript_run()
+    response = client.get(f"/issue/issue-1/runs/{run_id}/transcript.jsonl", headers=AUTH)
+    assert response.mimetype == "text/plain" and b'"type": "run"' in response.data
+
+
+def test_transcript_of_an_unknown_run_or_a_run_without_one_is_404(client, ws):
+    assert client.get("/issue/issue-1/runs/99/transcript", headers=AUTH).status_code == 404
+    run_id = store.start_run("issue-1", "plan", "worker")
+    assert client.get(f"/issue/issue-1/runs/{run_id}/transcript", headers=AUTH).status_code == 404
+    assert client.get(f"/issue/issue-1/runs/{run_id}/transcript.jsonl", headers=AUTH).status_code == 404
