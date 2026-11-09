@@ -102,6 +102,37 @@ def test_prepare_worktree_branches_copies_env_and_provisions_once(target, provis
     assert len(provisioned) == 1
 
 
+def test_prepare_worktree_replaces_a_leftover_directory_and_a_merged_branch(target, provisioned):
+    # What a removal that failed part-way leaves: the untracked files, no .git, and the
+    # issue's branch, already merged into the base
+    run(target, "branch", "fix/BEI-1")
+    leftover = config.WORKTREE_DIR / "BEI-1"
+    (leftover / ".venv").mkdir(parents=True)
+    (leftover / ".venv" / "pyvenv.cfg").write_text("home = nowhere")
+    (leftover / ".env").write_text("STALE=1")
+    seed_issue(store.GATHERING_CONTEXT, slot=2)
+
+    path = environment.prepare_worktree(store.get_issue("issue-1"))
+
+    assert (path / ".git").exists()
+    assert (path / "README.md").exists()
+    assert not (path / ".venv").exists()
+    assert (path / ".env").read_text() == "POSTGRES_USER=postgres\n"
+
+
+def test_prepare_worktree_keeps_an_earlier_attempts_unmerged_commits(target, provisioned):
+    run(target, "switch", "-c", "fix/BEI-1")
+    (target / "fix.txt").write_text("work in progress")
+    run(target, "add", "fix.txt")
+    run(target, "commit", "-m", "earlier attempt")
+    run(target, "switch", config.BASE_BRANCH)
+    seed_issue(store.GATHERING_CONTEXT, slot=2)
+
+    path = environment.prepare_worktree(store.get_issue("issue-1"))
+
+    assert (path / "fix.txt").read_text() == "work in progress"
+
+
 def test_failed_provisioning_is_retried_next_time(target, monkeypatch):
     seed_issue(store.GATHERING_CONTEXT, slot=2)
     issue = store.get_issue("issue-1")

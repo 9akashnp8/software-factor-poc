@@ -7,6 +7,7 @@ The variables are the ones the target repo reads for running several worktrees a
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 from pathlib import Path
@@ -103,8 +104,39 @@ def stop_servers(slot: int) -> list[int]:
     return stopped
 
 
-def _git(*args: str):
-    subprocess.run(["git", "-C", str(config.TARGET_REPO), *args], check=True, capture_output=True, text=True)
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(config.TARGET_REPO), *args], check=True, capture_output=True, text=True)
+
+
+def force_rmtree(path: Path):
+    """Delete a directory tree, read-only files (git objects, .venv) included."""
+
+    def clear_readonly(func, failed_path, _exc):
+        os.chmod(failed_path, stat.S_IWRITE)
+        func(failed_path)
+
+    shutil.rmtree(path, onexc=clear_readonly)
+
+
+def _add_worktree(identifier: str, path: Path):
+    """Branch from the remote tip so the fix starts on the latest base. Fetching leaves the
+    main checkout's working tree and local branches untouched."""
+    branch = branch_name(identifier)
+    base = f"origin/{config.BASE_BRANCH}"
+    _git("fetch", "origin", config.BASE_BRANCH)
+    # Whatever an earlier worktree of this issue left must not be mistaken for a live one
+    _git("worktree", "prune")
+    if path.exists():
+        # A removal that failed part-way (a locked .venv, say) leaves the untracked files
+        # behind with no .git: git doesn't know the directory, and uv, finding no workspace
+        # root in it, runs in the target repo's workspace that the directory sits inside.
+        force_rmtree(path)
+    if _git("branch", "--list", branch).stdout.strip() and _git("rev-list", "--count", f"{base}..{branch}").stdout.strip() != "0":
+        # Commits of an earlier attempt that never merged: carry on from them
+        _git("worktree", "add", str(path), branch)
+    else:
+        # A new issue, or a branch already merged: (re)start it at the base's tip
+        _git("worktree", "add", "-B", branch, str(path), base)
 
 
 def fetch_base():
@@ -164,11 +196,9 @@ def prepare_worktree(issue) -> Path:
     identifier = issue["identifier"]
     path = worktree_path(identifier)
     with _worktree_lock:
-        if not path.exists():
-            # Branch from the remote tip so the fix starts on the latest base. Fetching
-            # leaves the main checkout's working tree and local branches untouched.
-            _git("fetch", "origin", config.BASE_BRANCH)
-            _git("worktree", "add", "-b", branch_name(identifier), str(path), f"origin/{config.BASE_BRANCH}")
+        # A live worktree has a .git file; a directory without one is a leftover
+        if not (path / ".git").exists():
+            _add_worktree(identifier, path)
 
     marker = store.issue_dir(issue["id"]) / ".provisioned"
     if not marker.exists():
