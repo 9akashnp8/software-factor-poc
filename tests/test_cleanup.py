@@ -1,3 +1,5 @@
+import sys
+
 import anyio
 import pytest
 
@@ -111,3 +113,34 @@ def test_remove_worktree_deletes_what_git_left_behind(tmp_path, monkeypatch):
 
     assert not leftover.exists()
     assert git_calls[-1] == ("worktree", "prune")
+
+
+def test_remove_worktree_stops_an_orphan_holding_it_open(tmp_path, monkeypatch):
+    """A uvicorn --reload worker whose reloader died listens on nothing, so stop_servers
+    misses it, yet on Windows its open files keep the worktree from being deleted."""
+    monkeypatch.setattr(config, "WORKTREE_DIR", tmp_path)
+    worktree = tmp_path / "BEI-1"
+    (worktree / ".venv").mkdir(parents=True)
+    held = worktree / ".venv" / "held.txt"
+    held.write_text("open")
+    orphan = cleanup.subprocess.Popen(
+        [sys.executable, "-c", "import sys, time; f = open('.venv/held.txt'); print('ready', flush=True); time.sleep(60)"],
+        cwd=worktree,
+        stdout=cleanup.subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert orphan.stdout.readline().strip() == "ready"
+
+        def fake_git(*args):
+            if args[0] == "worktree" and args[1] == "remove":
+                raise cleanup.subprocess.CalledProcessError(128, args, stderr="Permission denied")
+
+        monkeypatch.setattr(cleanup, "_git", fake_git)
+        cleanup.remove_worktree("BEI-1")
+
+        assert orphan.wait(timeout=10) is not None
+        assert not worktree.exists()
+    finally:
+        orphan.kill()
+        orphan.stdout.close()

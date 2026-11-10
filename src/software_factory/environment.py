@@ -104,6 +104,44 @@ def stop_servers(slot: int) -> list[int]:
     return stopped
 
 
+def _inside(path: str | None, root: str) -> bool:
+    if not path:
+        return False
+    path = os.path.normcase(os.path.abspath(path))
+    return path == root or path.startswith(root + os.sep)
+
+
+def stop_worktree_processes(worktree: Path) -> list[int]:
+    """Stop every process running from the worktree or in it, with its whole tree.
+
+    For a teardown only: an issue still being worked runs its agent there too. stop_servers
+    finds a dev server by its port, but an orphan of one doesn't listen: a uvicorn --reload
+    worker whose reloader died holds the .venv's fastapi.exe open and listens on nothing,
+    so on Windows the worktree can't be deleted. Returns the pids stopped.
+    """
+    root = os.path.normcase(os.path.abspath(worktree))
+    tree = {}
+    for process in psutil.process_iter(["pid", "exe", "cwd"]):
+        if process.pid == os.getpid():
+            continue
+        if _inside(process.info["exe"], root) or _inside(process.info["cwd"], root):
+            try:
+                for p in [*process.children(recursive=True), process]:
+                    tree.setdefault(p.pid, p)
+            except psutil.NoSuchProcess:
+                continue
+    tree.pop(os.getpid(), None)
+    stopped = []
+    for p in tree.values():
+        try:
+            p.kill()
+            stopped.append(p.pid)
+        except psutil.NoSuchProcess:
+            pass
+    psutil.wait_procs(list(tree.values()), timeout=10)
+    return stopped
+
+
 def _git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(config.TARGET_REPO), *args], check=True, capture_output=True, text=True)
 
