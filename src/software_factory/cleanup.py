@@ -10,7 +10,14 @@ from dotenv import dotenv_values
 from psycopg import sql
 
 from software_factory import config, deployments, linear, store
-from software_factory.environment import branch_name, database_name, force_rmtree, stop_servers, worktree_path
+from software_factory.environment import (
+    branch_name,
+    database_name,
+    force_rmtree,
+    stop_servers,
+    stop_worktree_processes,
+    worktree_path,
+)
 
 
 def _target_env() -> dict:
@@ -56,6 +63,8 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 def remove_worktree(identifier: str):
     path = worktree_path(identifier)
     if path.exists():
+        # On Windows anything running from the worktree keeps its files from being deleted
+        stop_worktree_processes(path)
         try:
             _git("worktree", "remove", "--force", str(path))
         except subprocess.CalledProcessError:
