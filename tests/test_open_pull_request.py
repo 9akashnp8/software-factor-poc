@@ -157,9 +157,29 @@ def test_create_pull_request_posts_draft(monkeypatch):
 
 
 def test_create_pull_request_reuses_active_pr(monkeypatch):
+    requests = []
+
     def handler(request: httpx.Request):
-        assert request.method == "GET"
-        return httpx.Response(200, json={"value": [{"pullRequestId": 9}]})
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"value": [{"pullRequestId": 9}]})
+        return httpx.Response(200, json={"pullRequestId": 9})
+
+    mock_ado(monkeypatch, handler)
+    assert anyio.run(main.create_pull_request, BRANCH, "t", "d") == f"{main.ADO_REPO_URL}/pullrequest/9"
+    # After a replan the old title and description describe the fix that was sent back
+    _, patch = requests
+    assert patch.method == "PATCH"
+    assert patch.url.path.endswith("/pullrequests/9")
+    assert json.loads(patch.content) == {"title": "t", "description": "d"}
+
+
+def test_create_pull_request_reuses_pr_when_update_fails(monkeypatch):
+    def handler(request: httpx.Request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"value": [{"pullRequestId": 9}]})
+        assert request.method == "PATCH"
+        return httpx.Response(500)
 
     mock_ado(monkeypatch, handler)
     assert anyio.run(main.create_pull_request, BRANCH, "t", "d") == f"{main.ADO_REPO_URL}/pullrequest/9"

@@ -306,7 +306,8 @@ on the PR:
   1a2b3c4d for 2 comment threads").
 - **`/factory replan`**: the threads go back to the planner as rework, with the fix already
   on the branch. The revised plan comes to the plan page for review, and approving it
-  implements it on top of the branch and pushes to the same PR. Use it when the approach
+  implements it on top of the branch, pushes to the same PR, and replaces the PR's title
+  and description with ones for the new fix. Use it when the approach
   is wrong, not the details. The agent says so in its reply when it thinks a comment
   needs this.
 

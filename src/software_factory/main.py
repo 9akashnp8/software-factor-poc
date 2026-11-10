@@ -1160,7 +1160,11 @@ def pr_description(ws: Path, issue_url: str | None = None, plan_url: str | None 
 
 
 async def create_pull_request(branch: str, title: str, description: str) -> str:
-    """Open a draft PR for branch into BASE_BRANCH, or reuse an active one. Returns its web URL."""
+    """Open a draft PR for branch into BASE_BRANCH, or reuse an active one. Returns its web URL.
+
+    A reused PR gets the new title and description: after a /factory replan, the old ones
+    describe the fix the reviewers sent back.
+    """
     pat = config.ado_pat()
 
     source_ref = f"refs/heads/{branch}"
@@ -1179,7 +1183,16 @@ async def create_pull_request(branch: str, title: str, description: str) -> str:
         )
         existing.raise_for_status()
         if prs := existing.json()["value"]:
-            return f"{ADO_REPO_URL}/pullrequest/{prs[0]['pullRequestId']}"
+            pr_id = prs[0]["pullRequestId"]
+            try:
+                updated = await client.patch(
+                    f"{ADO_REPO_API}/pullrequests/{pr_id}", json={"title": title, "description": description}
+                )
+                updated.raise_for_status()
+            except httpx.HTTPError as e:
+                # The branch is pushed and the PR is there; a stale description isn't worth stopping for
+                log.warning("Couldn't update PR %s's title and description: %s", pr_id, e)
+            return f"{ADO_REPO_URL}/pullrequest/{pr_id}"
 
         result = await client.post(
             f"{ADO_REPO_API}/pullrequests",
