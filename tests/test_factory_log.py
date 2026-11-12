@@ -4,7 +4,7 @@ import logging
 import subprocess
 
 import anyio
-from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, SystemMessage, TextBlock, ToolUseBlock
 
 from conftest import seed_issue
 from software_factory import config, factory_log, store
@@ -126,6 +126,45 @@ def test_a_run_keeps_every_message_in_its_transcript(monkeypatch):
     assert message["content"][1] == {"id": "t1", "name": "Read", "input": {"file_path": "grade.py"}}
     assert done["type"] == "ResultMessage" and done["total_cost_usd"] == 0.5
     assert end == {**end, "type": "end", "outcome": "success: done", "rate_limited": False}
+
+
+def running(*descriptions) -> SystemMessage:
+    """The CLI's list of background tasks still running."""
+    tasks = [{"task_id": f"b{i}", "task_type": "local_bash", "description": d} for i, d in enumerate(descriptions)]
+    return SystemMessage(subtype="background_tasks_changed", data={"type": "system", "subtype": "background_tasks_changed", "tasks": tasks})
+
+
+def test_a_turn_that_ends_with_a_background_task_running_isnt_the_end_of_the_run(monkeypatch):
+    seed_issue(store.PLANNING)
+    # The CLI starts a new turn when the task finishes, as it does in a real session
+    waiting = result(text="The test is still running; I'll finish when it completes.")
+    back = AssistantMessage(content=[TextBlock("The test finished")], model="opus")
+    finished = result(text="Plan presented")
+    finished.total_cost_usd = 0.8
+    after = result(text="not read")
+    fake_agent(monkeypatch, results=[running("Read-first test"), waiting, running(), back, finished, after])
+    done = run()
+    assert (done.result, done.num_turns, done.total_cost_usd) == ("Plan presented", 6, 0.8)
+    assert [line["result"] for line in transcript() if line["type"] == "ResultMessage"] == [waiting.result, "Plan presented"]
+    assert store.runs("issue-1")[0]["result_text"] == "Plan presented"
+
+
+def test_a_run_gives_up_on_background_tasks_that_dont_finish(monkeypatch):
+    seed_issue(store.PLANNING)
+    monkeypatch.setattr(main, "BACKGROUND_WAIT_SECONDS", 0.05)
+    fake_agent(monkeypatch, results=[running("Read-first test"), result(text="Still running")], hang=True)
+    assert run() is None
+    issue = store.get_issue("issue-1")
+    assert issue["status"] == store.NEEDS_ATTENTION
+    assert "background tasks were still running" in issue["needs_attention_reason"]
+    assert "Read-first test" in issue["needs_attention_reason"]
+
+
+def test_a_run_that_failed_doesnt_wait_for_its_background_tasks(monkeypatch):
+    seed_issue(store.PLANNING)
+    monkeypatch.setattr(main, "BACKGROUND_WAIT_SECONDS", 0.05)
+    fake_agent(monkeypatch, results=[running("Read-first test"), result("error_max_turns", is_error=True, text="")], hang=True)
+    assert run().subtype == "error_max_turns"
 
 
 def test_a_crashed_run_keeps_its_traceback(monkeypatch, caplog):

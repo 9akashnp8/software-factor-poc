@@ -12,6 +12,7 @@ import aiofiles
 import anyio
 import httpx
 from claude_agent_sdk import (
+    AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
@@ -19,6 +20,8 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     RateLimitEvent,
     ResultMessage,
+    SystemMessage,
+    UserMessage,
     create_sdk_mcp_server,
 )
 
@@ -52,6 +55,10 @@ log = logging.getLogger(__name__)
 
 # How long to pause when a rate limit gives no reset time
 DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 15 * 60
+
+# How long a run whose turn ended waits for its background tasks. The CLI stops a
+# background command after 30 minutes; this covers anything it doesn't.
+BACKGROUND_WAIT_SECONDS = 45 * 60
 
 
 SYSTEM_PROMPT = """
@@ -566,6 +573,56 @@ def plan_phase_can_use_tool(issue_id: str, ws: Path):
     return can_use_tool
 
 
+class BackgroundTasksTimedOut(Exception):
+    """The run's turn ended and its background tasks didn't finish in time."""
+
+
+async def receive_run(client: ClaudeSDKClient):
+    """Yield a run's messages until a result comes back with no background task running.
+
+    An agent can end its turn while a background task is still going, such as a command
+    that outran its timeout. The CLI starts a new turn when the task finishes, so a result
+    that arrives with tasks still running isn't the end of the run.
+    """
+    messages = aiter(client.receive_messages())
+    running: dict[str, str] = {}
+    waiting_until = None  # Set from a result that left tasks running until the agent is back
+    while True:
+        timeout = None if waiting_until is None else max(0.0, waiting_until - anyio.current_time())
+        try:
+            with anyio.fail_after(timeout):
+                msg = await anext(messages)
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            raise BackgroundTasksTimedOut(", ".join(running.values())) from None
+        yield msg
+        # The CLI sends the whole list of running tasks each time it changes
+        if isinstance(msg, SystemMessage) and msg.subtype == "background_tasks_changed":
+            tasks = msg.data.get("tasks") or []
+            running = {t.get("task_id", ""): t.get("description") or t.get("task_id", "?") for t in tasks}
+        elif isinstance(msg, (AssistantMessage, UserMessage)):
+            waiting_until = None
+        elif isinstance(msg, ResultMessage):
+            if msg.is_error or not running:
+                return
+            log.info("Turn ended with background tasks running, waiting for them: %s", ", ".join(running.values()))
+            waiting_until = anyio.current_time() + BACKGROUND_WAIT_SECONDS
+
+
+def combine_results(earlier: ResultMessage | None, later: ResultMessage) -> ResultMessage:
+    """One result for a run that took several turns. The CLI's cost is a running total
+    for the session; its turns and duration are for that turn alone."""
+    if earlier is None:
+        return later
+    return replace(
+        later,
+        num_turns=earlier.num_turns + later.num_turns,
+        duration_ms=earlier.duration_ms + later.duration_ms,
+        duration_api_ms=earlier.duration_api_ms + later.duration_api_ms,
+    )
+
+
 def describe_result(result: ResultMessage | None) -> str:
     if result is None:
         return "no result came back"
@@ -613,14 +670,20 @@ async def run_agent(
     try:
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
-            async for msg in client.receive_response():
+            async for msg in receive_run(client):
                 transcript.message(msg)
                 if isinstance(msg, RateLimitEvent) and msg.rate_limit_info.status == "rejected":
                     rejected_until = msg.rate_limit_info.resets_at or time.time() + DEFAULT_RATE_LIMIT_PAUSE_SECONDS
                     log.warning("%s run %s hit a rate limit, resets at %s", phase, run_id, rejected_until)
                 if isinstance(msg, ResultMessage):
-                    result = msg
+                    result = combine_results(result, msg)
         error = None
+    except BackgroundTasksTimedOut as e:
+        log.warning("%s run %s gave up waiting for its background tasks: %s", phase, run_id, e)
+        transcript.error(e)
+        minutes = BACKGROUND_WAIT_SECONDS // 60
+        error = f"The {phase} run ended its turn and its background tasks were still running after {minutes} min: {e}"
+        crashed = True
     except Exception as e:
         log.exception("%s run %s crashed", phase, run_id)
         transcript.error(e)
@@ -635,7 +698,7 @@ async def run_agent(
         transcript.write("end", outcome=outcome, rate_limited=rate_limited)
         transcript.close()
         log.log(
-            logging.WARNING if failed else logging.INFO,
+            logging.WARNING if failed or error else logging.INFO,
             "%s run %s ended: %s (%s turns, $%.2f)",
             phase,
             run_id,
