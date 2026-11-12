@@ -39,10 +39,11 @@ def write_reproduction(record=REPRODUCED, issue_id="issue-1"):
     (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
 
 
-def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=None, reproduction=REPRODUCED):
+def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=None, reproduction=REPRODUCED, hang=False):
     """Replace ClaudeSDKClient. exit_plan, if given, is sent to the session's callback as
     ExitPlanMode input, after writing reproduction (if any) as the planner's record; work,
-    if given, is called as the agent's edits and commits."""
+    if given, is called as the agent's edits and commits. hang leaves the session open,
+    sending nothing more, after the last message."""
     sessions = []
 
     class FakeClient:
@@ -59,7 +60,7 @@ def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=No
         async def query(self, prompt):
             self.prompt = prompt
 
-        async def receive_response(self):
+        async def receive_messages(self):
             if exit_plan is not None:
                 if reproduction is not None:
                     write_reproduction(reproduction)
@@ -70,6 +71,8 @@ def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=No
                 raise error
             for message in results if results is not None else [result()]:
                 yield message
+            if hang:
+                await anyio.sleep_forever()
 
     monkeypatch.setattr(main, "ClaudeSDKClient", FakeClient)
     return sessions
