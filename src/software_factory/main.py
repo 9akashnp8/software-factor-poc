@@ -32,6 +32,7 @@ from software_factory import (
     factory_log,
     linear,
     logs,
+    plan_questions,
     pull_requests,
     reproduction,
     review_comments,
@@ -257,6 +258,29 @@ REWORK_PROMPT = (
     "answer to your question, say), try again and update reproduction.json first:\n\n{feedback}"
 )
 
+# A reviewer's question about the plan, sent to the planner's own session
+ASK_PROMPT = """
+The reviewer has a question about your plan. They haven't decided whether the plan should
+change, so don't change it: answer the question.
+
+<question>
+{question}
+</question>
+
+Look into the code, the logs or the app if you need to, with the same read-only tools as
+before. Don't call ExitPlanMode, and don't edit the plan file or {reproduction}.
+
+Reply with your answer in Markdown, for the reviewer: the answer first, then what it rests
+on. If what you found means the plan should change, say what you would change and why; the
+reviewer decides whether to send it back for rework.
+"""
+
+# The refusals an answering run gets if it tries to revise the plan anyway
+ANSWER_ONLY = (
+    "You're answering the reviewer's question, not revising the plan. Leave the plan as it "
+    "is and reply with your answer; if the plan should change, say how in the answer."
+)
+
 REFRESH_PROMPT = """
 {dev} has moved since you wrote your plan, and your worktree has been updated to it.
 
@@ -400,6 +424,7 @@ LIMITS = {
     "plan": {"max_turns": 80, "max_budget_usd": 5.0},
     "rework": {"max_turns": 80, "max_budget_usd": 5.0},
     "refresh": {"max_turns": 80, "max_budget_usd": 5.0},
+    "ask": {"max_turns": 40, "max_budget_usd": 2.0},
     "implement": {"max_turns": 150, "max_budget_usd": 10.0},
     "fix": {"max_turns": 150, "max_budget_usd": 10.0},
     "review": {"max_turns": 60, "max_budget_usd": 3.0},
@@ -526,10 +551,20 @@ def _is(path: str | None, target: Path) -> bool:
     return bool(path) and Path(path).is_absolute() and Path(path).resolve() == target.resolve()
 
 
-def plan_phase_can_use_tool(issue_id: str, ws: Path):
-    """Permission callback for planning: save the plan on ExitPlanMode, deny anything else that writes."""
+def plan_phase_can_use_tool(issue_id: str, ws: Path, answering: bool = False):
+    """Permission callback for planning: save the plan on ExitPlanMode, deny anything else that writes.
+
+    answering: the run answers a reviewer's question, so the plan and the reproduction record
+    stay as they are.
+    """
 
     async def can_use_tool(tool_name, tool_input, context):
+        if answering and (
+            tool_name == "ExitPlanMode"
+            or (tool_name == "Write" and _inside(tool_input.get("file_path"), PLANS_DIR))
+            or (tool_name == "Write" and _is(tool_input.get("file_path"), ws / reproduction.FILE))
+        ):
+            return PermissionResultDeny(message=ANSWER_ONLY)
         if tool_name == "ExitPlanMode":
             # Not an interrupt: the planner writes the record and presents the plan again
             if problem := reproduction.check(ws):
@@ -751,7 +786,7 @@ def check_plan_outcome(issue_id: str, result: ResultMessage | None, during: str)
     )
 
 
-def planning_options(issue, worktree: Path, ws: Path, **extra) -> ClaudeAgentOptions:
+def planning_options(issue, worktree: Path, ws: Path, answering: bool = False, **extra) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=config.PLAN_MODEL,
         system_prompt=AGENT_SYSTEM_PROMPT,
@@ -762,7 +797,7 @@ def planning_options(issue, worktree: Path, ws: Path, **extra) -> ClaudeAgentOpt
         cwd=worktree,
         env=agent_env(issue),
         mcp_servers=mcp_servers(ws),
-        can_use_tool=plan_phase_can_use_tool(issue["id"], ws),
+        can_use_tool=plan_phase_can_use_tool(issue["id"], ws, answering),
         **extra,
     )
 
@@ -802,7 +837,7 @@ def archive_attempt(issue_id: str, pr_url: str | None):
     ws = store.issue_dir(issue_id)
     archive = ws / PREVIOUS_ATTEMPT_DIR
     archive.mkdir(parents=True, exist_ok=True)
-    for name in ("plan.md", "report.md", "qa.json", "review.md", "review.json", reproduction.FILE):
+    for name in ("plan.md", "report.md", "qa.json", "review.md", "review.json", reproduction.FILE, plan_questions.FILE):
         if (ws / name).exists():
             shutil.move(ws / name, archive / name)
     (archive / "pr_url.txt").write_text(pr_url or "", encoding="utf-8")
@@ -965,6 +1000,34 @@ async def rework_plan(issue_id: str, feedback: str | None, owner: str = "cli"):
     prompt = REWORK_PROMPT.format(feedback=feedback or "No specific feedback given.")
     result = await run_agent(issue_id, "rework", options, prompt, owner)
     check_plan_outcome(issue_id, result, during=store.REWORKING)
+
+
+async def answer_question(issue_id: str, owner: str = "cli"):
+    """Have the planner answer the reviewer's question (pending_feedback) without changing the plan.
+
+    The issue comes back to review with the answer recorded, or with why there isn't one.
+    """
+    issue = store.get_issue(issue_id)
+    ws = store.issue_dir(issue_id)
+    question = (issue["pending_feedback"] or "").strip()
+    asked_by = plan_questions.asked_by(store.events(issue_id))
+    options = planning_options(issue, await worktree_for(issue), ws, answering=True, resume=issue["session_id"])
+    prompt = ASK_PROMPT.format(question=question or "(no question given)", reproduction=reproduction.FILE)
+    result = await run_agent(issue_id, "ask", options, prompt, owner)
+
+    status = store.get_issue(issue_id)["status"]
+    if status == store.ASK_QUEUED:
+        # A rate limit put it back on the queue, question and all, to be asked again
+        return
+    answer = (result.result or "").strip() if result else ""
+    answered = bool(answer) and result.subtype == "success" and not result.is_error
+    run_id = store.runs(issue_id)[-1]["id"]
+    plan_questions.record(ws, question, asked_by, answer if answered else None, run_id)
+    store.set_fields(issue_id, pending_feedback=None)
+    # Otherwise a crash flagged it, and the plan waits there with the question recorded
+    if status == store.ASKING:
+        reason = "Question answered" if answered else f"The question wasn't answered ({describe_result(result)})"
+        store.transition(issue_id, store.PLAN_READY, expected={store.ASKING}, actor="worker", reason=reason)
 
 
 class WorktreeNotUpdated(Exception):

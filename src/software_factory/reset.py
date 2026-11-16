@@ -16,6 +16,7 @@ from software_factory.environment import branch_name
 ARTIFACTS = (
     "issue.md", "plan.md", "report.md", "qa.json", "review.md", "review.json", "conversation.json",
     "attachments", "reproduction.json", "replay.json", "replays", "verification.json", "evidence", "logs",
+    "questions.json",
 )
 # Finished issues: reset --all leaves them alone
 FINISHED = frozenset({store.MERGED, store.DEPLOY_PENDING, store.DEPLOYED, store.RELEASED})
