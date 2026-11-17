@@ -149,6 +149,34 @@ def test_a_turn_that_ends_with_a_background_task_running_isnt_the_end_of_the_run
     assert store.runs("issue-1")[0]["result_text"] == "Plan presented"
 
 
+def test_a_resumed_sessions_empty_first_turn_isnt_the_end_of_the_run(monkeypatch):
+    seed_issue(store.PLANNING)
+    # The CLI reports the previous process's orphaned background tasks as a turn with no
+    # work in it before it gets to the prompt
+    settled = result(text="")
+    settled.num_turns = 0
+    settled.total_cost_usd = 1.3
+    worked = AssistantMessage(content=[TextBlock("Revising the plan")], model="opus")
+    finished = result(text="Plan presented")
+    finished.total_cost_usd = 1.8
+    fake_agent(monkeypatch, results=[settled, worked, finished])
+    done = run()
+    assert (done.result, done.num_turns, done.total_cost_usd) == ("Plan presented", 3, 1.8)
+    assert [line["result"] for line in transcript() if line["type"] == "ResultMessage"] == ["", "Plan presented"]
+
+
+def test_a_resumed_session_that_never_starts_the_prompts_turn_is_flagged(monkeypatch):
+    seed_issue(store.PLANNING)
+    monkeypatch.setattr(main, "BACKGROUND_WAIT_SECONDS", 0.05)
+    settled = result(text="")
+    settled.num_turns = 0
+    fake_agent(monkeypatch, results=[settled], hang=True)
+    assert run() is None
+    issue = store.get_issue("issue-1")
+    assert issue["status"] == store.NEEDS_ATTENTION
+    assert "no turn for its prompt" in issue["needs_attention_reason"]
+
+
 def test_a_run_gives_up_on_background_tasks_that_dont_finish(monkeypatch):
     seed_issue(store.PLANNING)
     monkeypatch.setattr(main, "BACKGROUND_WAIT_SECONDS", 0.05)
