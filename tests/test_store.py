@@ -52,8 +52,7 @@ def test_allowed_actions_need_a_plan_and_session():
     ws = seed_issue(store.PLAN_READY)
     assert store.allowed_actions(store.get_issue("issue-1")) == ["release"]
     (ws / "plan.md").write_text("# Plan")
-    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "refresh", "release"]
-    # With a PR open, releasing abandons it
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "ask", "refresh", "release"]
     store.transition("issue-1", store.PR_OPENED)
     assert store.allowed_actions(store.get_issue("issue-1")) == ["release"]
     store.transition("issue-1", store.UPDATING)
@@ -69,6 +68,17 @@ def test_refresh_is_claimed_after_rework_and_requeued_if_cut_off():
     assert store.get_issue("issue-1")["status"] == store.REFRESHING
     assert sorted(store.requeue_orphans()) == ["issue-1", "r"]
     assert store.get_issue("issue-1")["status"] == store.REFRESH_QUEUED
+
+
+def test_a_question_is_claimed_before_rework_and_requeued_if_cut_off():
+    seed_issue(store.PLAN_READY)
+    seed_issue(store.REWORK_QUEUED, issue_id="r", identifier="BEI-2", slot=2)
+    assert store.transition("issue-1", store.ASK_QUEUED, expected=store.ACTIONS["ask"])
+    assert store.claim_next() == ("issue-1", "ask")
+    assert store.get_issue("issue-1")["status"] == store.ASKING
+    assert store.allowed_actions(store.get_issue("issue-1")) == []
+    assert store.requeue_orphans() == ["issue-1"]
+    assert store.get_issue("issue-1")["status"] == store.ASK_QUEUED
 
 
 def test_enqueue_new_skips_issues_seen_before():
