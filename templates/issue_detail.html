@@ -148,6 +148,39 @@
         </div>
     </section>
 
+    {% if questions or open_question %}
+    <section class="sf-section" aria-labelledby="questions-heading">
+        <div class="sf-section-head"><h2 id="questions-heading">Questions</h2></div>
+        <ol class="sf-panel sf-qa">
+            {% for q in questions %}
+            <li class="sf-qa-item">
+                <div class="sf-qa-q">
+                    <span class="sf-qa-meta">{% if q.asked_by %}<span class="sf-event-actor">{{ q.asked_by }}</span>{% endif %}<span class="sf-muted sf-mono" title="{{ q.answered_at }}">{{ q.answered_at | ago }} ago</span></span>
+                    <p>{{ q.question }}</p>
+                </div>
+                <div class="sf-qa-a">
+                    {% if q.answer %}
+                    <article class="sf-prose">{{ q.answer | md }}</article>
+                    {% else %}
+                    <p class="sf-muted">The planner couldn't answer this. Ask again, or decide without it.</p>
+                    {% endif %}
+                    {% if q.run_id in transcripts %}<a class="sf-qa-run" href="{{ url_for('run_transcript', issue_id=issue.id, run_id=q.run_id) }}">How it got there{{ ui.icon("arrow-right", 14) }}</a>{% endif %}
+                </div>
+            </li>
+            {% endfor %}
+            {% if open_question %}
+            <li class="sf-qa-item is-open">
+                <div class="sf-qa-q">
+                    {% if open_question.asked_by %}<span class="sf-qa-meta"><span class="sf-event-actor">{{ open_question.asked_by }}</span></span>{% endif %}
+                    <p>{{ open_question.question }}</p>
+                </div>
+                <div class="sf-qa-a"><p class="sf-muted">{{ ui.status_icon('run', 12) }} The planner is looking into it. The plan stays as it is; the answer shows here when it's in.</p></div>
+            </li>
+            {% endif %}
+        </ol>
+    </section>
+    {% endif %}
+
     {% if overlaps %}
     <div class="sf-banner sf-banner-warn" style="margin-top: 16px">
         {{ ui.icon("alert") }}
@@ -180,15 +213,18 @@
         <div class="sf-decision-copy" data-idle>
             {% if 'approve' in actions %}
             <strong>Review the plan</strong>
-            <span>Approving starts implementation. Rework sends your notes back to the agent for a new plan.</span>
+            <span>Approving starts implementation. Rework sends your notes back to the agent for a new plan. Asking gets you an answer and leaves the plan as it is.</span>
             {% else %}
             <strong>Not reproduced</strong>
             <span>There's no fix to approve until the bug reproduces. Send QA's answer, or your own pointers, as rework.</span>
             {% endif %}
         </div>
         <div class="sf-decision-actions" data-idle>
+            {% if 'ask' in actions %}
+            <button type="button" class="sf-btn sf-btn-secondary" data-open="ask">{{ ui.icon("question") }}<span>Ask a question</span><kbd class="sf-kbd">Q</kbd></button>
+            {% endif %}
             {% if 'rework' in actions %}
-            <button type="button" class="sf-btn sf-btn-secondary" data-open-rework>{{ ui.icon("rework") }}<span>Request rework</span><kbd class="sf-kbd">R</kbd></button>
+            <button type="button" class="sf-btn sf-btn-secondary" data-open="rework">{{ ui.icon("rework") }}<span>Request rework</span><kbd class="sf-kbd">R</kbd></button>
             {% endif %}
             {% if 'approve' in actions %}
             <form class="sf-approve" method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}" data-approve>
@@ -201,8 +237,23 @@
             </form>
             {% endif %}
         </div>
+        {% if 'ask' in actions %}
+        <form class="sf-rework-form" method="post" action="{{ url_for('ask_question', issue_id=issue.id) }}" data-form="ask" hidden>
+            <div class="sf-field">
+                <label class="sf-field-label" for="ask-question">What do you want to know about the plan?</label>
+                <div class="sf-input is-multiline"><textarea id="ask-question" class="sf-input-control" name="question" rows="3" required
+                    placeholder="Why this approach? Does it cover the other callers?"></textarea></div>
+                <p class="sf-field-hint">The planner answers from what it found, and can look further. The plan isn't changed; you decide what to do after reading the answer.</p>
+            </div>
+            {{ ui.csrf() }}
+            <div class="sf-decision-actions">
+                <button type="button" class="sf-btn sf-btn-ghost" data-cancel>Cancel</button>
+                <button type="submit" class="sf-btn sf-btn-primary">Ask<kbd class="sf-kbd">Ctrl ↵</kbd></button>
+            </div>
+        </form>
+        {% endif %}
         {% if 'rework' in actions %}
-        <form class="sf-rework-form" method="post" action="{{ url_for('rework_plan', issue_id=issue.id) }}" data-rework hidden>
+        <form class="sf-rework-form" method="post" action="{{ url_for('rework_plan', issue_id=issue.id) }}" data-form="rework" hidden>
             <div class="sf-field">
                 <label class="sf-field-label" for="feedback">What should change in the plan?</label>
                 <div class="sf-input is-multiline"><textarea id="feedback" class="sf-input-control" name="feedback" rows="3" required
@@ -211,36 +262,49 @@
             </div>
             {{ ui.csrf() }}
             <div class="sf-decision-actions">
-                <button type="button" class="sf-btn sf-btn-ghost" data-cancel-rework>Cancel</button>
+                <button type="button" class="sf-btn sf-btn-ghost" data-cancel>Cancel</button>
                 <button type="submit" class="sf-btn sf-btn-primary">Send for rework<kbd class="sf-kbd">Ctrl ↵</kbd></button>
             </div>
         </form>
         {% endif %}
     </div>
     <script>
-        // A approves, R opens rework, Ctrl+Enter sends it, Esc closes it
+        // A approves, Q opens a question, R opens rework, Ctrl+Enter sends the open form, Esc closes it
         (function () {
             const bar = document.querySelector('[data-decision]');
-            const rework = bar.querySelector('[data-rework]');
+            const forms = Object.fromEntries([...bar.querySelectorAll('[data-form]')].map((f) => [f.dataset.form, f]));
             const approve = bar.querySelector('[data-approve]');
             const idle = [...bar.querySelectorAll('[data-idle]')];
-            function setRework(open) {
-                if (!rework) return;
-                rework.hidden = !open;
-                idle.forEach((el) => (el.hidden = open));
-                bar.classList.toggle('is-rework', open);
-                (open ? rework.querySelector('textarea') : bar.querySelector('[data-open-rework]')).focus();
+            let current = null;
+            function open(name) {
+                const form = forms[name];
+                if (!form) return;
+                Object.values(forms).forEach((f) => (f.hidden = f !== form));
+                idle.forEach((el) => (el.hidden = true));
+                bar.classList.add('is-rework');
+                current = name;
+                form.querySelector('textarea').focus();
             }
-            bar.querySelector('[data-open-rework]')?.addEventListener('click', () => setRework(true));
-            bar.querySelector('[data-cancel-rework]')?.addEventListener('click', () => setRework(false));
-            rework?.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rework.requestSubmit(); }
-                if (e.key === 'Escape') setRework(false);
-            });
+            function close() {
+                if (!current) return;
+                const was = current;
+                Object.values(forms).forEach((f) => (f.hidden = true));
+                idle.forEach((el) => (el.hidden = false));
+                bar.classList.remove('is-rework');
+                current = null;
+                bar.querySelector('[data-open="' + was + '"]')?.focus();
+            }
+            bar.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => open(b.dataset.open)));
+            bar.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', close));
+            Object.values(forms).forEach((form) => form.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); }
+                if (e.key === 'Escape') close();
+            }));
             document.addEventListener('keydown', (e) => {
                 if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.target.closest('input, textarea, select')) return;
-                if (e.key === 'a' && approve && rework?.hidden !== false) approve.requestSubmit();
-                if (e.key === 'r' && rework) { e.preventDefault(); setRework(true); }
+                if (e.key === 'a' && approve && !current) approve.requestSubmit();
+                if (e.key === 'q' && forms.ask) { e.preventDefault(); open('ask'); }
+                if (e.key === 'r' && forms.rework) { e.preventDefault(); open('rework'); }
             });
         })();
     </script>
@@ -280,11 +344,15 @@
             {% if 'release' in actions %}
             <li class="sf-action">
                 <form method="post" action="{{ url_for('release_issue', issue_id=issue.id) }}"
-                      onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear and any PR are left as they are.');">
+                      {% if issue.pr_url %}
+                      onsubmit="return confirm('Abandon this issue\'s PR if it\'s still open, delete its branch on origin, drop its database and remove its worktree? Uncommitted work in the worktree is lost. Linear is left as it is.');"
+                      {% else %}
+                      onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear is left as it is.');"
+                      {% endif %}>
                     {{ ui.csrf() }}
                     <button type="submit" class="sf-btn sf-btn-danger">{{ ui.icon("x") }}<span>Release</span></button>
                 </form>
-                <p>Give up on this issue and free its slot.</p>
+                <p>Give up on this issue and free its slot{% if issue.pr_url %}; its PR is abandoned{% endif %}.</p>
             </li>
             {% endif %}
         </ul>

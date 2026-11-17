@@ -1,4 +1,6 @@
+import subprocess
 import sys
+from pathlib import Path
 
 import anyio
 import pytest
@@ -14,7 +16,9 @@ def steps(monkeypatch) -> list:
     monkeypatch.setattr(cleanup, "drop_databases", lambda identifier: calls.append(("drop", identifier)))
     monkeypatch.setattr(cleanup, "flush_redis", lambda slot: calls.append(("flush", slot)))
     monkeypatch.setattr(cleanup, "remove_worktree", lambda identifier: calls.append(("worktree", identifier)))
-    monkeypatch.setattr(cleanup, "delete_branches", lambda identifier, remote: calls.append(("branch", identifier, remote)))
+    monkeypatch.setattr(
+        cleanup, "delete_branches", lambda identifier, remote, expected_tip=None: calls.append(("branch", identifier, remote))
+    )
     return calls
 
 
@@ -88,6 +92,13 @@ def test_release_tears_down_and_leaves_linear_alone(steps, linear_states):
     assert linear_states == []
 
 
+
+def test_release_after_an_abandoned_pr_deletes_the_remote_branch(steps):
+    seed_issue(store.RELEASING, slot=2, pr_id=7)
+    assert anyio.run(cleanup.release, "issue-1", "abc123")
+    assert steps[-1] == ("branch", "BEI-1", True)
+    assert store.get_issue("issue-1")["status"] == store.RELEASED
+
 def test_releasing_an_issue_that_never_started_touches_nothing(steps):
     seed_issue(store.RELEASING, slot=None)
     assert anyio.run(cleanup.release, "issue-1")
@@ -144,3 +155,56 @@ def test_remove_worktree_stops_an_orphan_holding_it_open(tmp_path, monkeypatch):
     finally:
         orphan.kill()
         orphan.stdout.close()
+
+
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def origin(tmp_path, monkeypatch) -> Path:
+    """A clone whose origin has fix/BEI-1 and branches and a tag with similar names."""
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "dev", str(remote))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "dev")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "remote", "add", "origin", str(remote))
+    (repo / "a.txt").write_text("a")
+    git(repo, "add", "a.txt")
+    git(repo, "commit", "-q", "-m", "a")
+    for ref in ("dev", "fix/BEI-1", "fix/BEI-10", "someone/fix/BEI-1"):
+        git(repo, "push", "-q", "origin", f"HEAD:refs/heads/{ref}")
+    git(repo, "push", "-q", "origin", "HEAD:refs/tags/fix/BEI-1")
+    monkeypatch.setattr(config, "TARGET_REPO", repo)
+    return repo
+
+
+def remote_refs(repo: Path) -> set[str]:
+    return {line.split("	")[1] for line in git(repo, "ls-remote", "origin").splitlines()}
+
+
+def test_delete_branches_removes_only_the_issues_branch(origin):
+    tip = git(origin, "rev-parse", "HEAD")
+    assert cleanup.delete_branches("BEI-1", expected_tip=tip) is None
+    assert remote_refs(origin) == {
+        "HEAD", "refs/heads/dev", "refs/heads/fix/BEI-10", "refs/heads/someone/fix/BEI-1", "refs/tags/fix/BEI-1"
+    }
+
+
+def test_delete_branches_keeps_a_branch_someone_pushed_to(origin):
+    pr_tip = git(origin, "rev-parse", "HEAD")
+    (origin / "b.txt").write_text("b")
+    git(origin, "add", "b.txt")
+    git(origin, "commit", "-q", "-m", "b")
+    git(origin, "push", "-q", "origin", "HEAD:refs/heads/fix/BEI-1")
+    note = cleanup.delete_branches("BEI-1", expected_tip=pr_tip)
+    assert note.startswith("Kept fix/BEI-1 on origin")
+    assert "refs/heads/fix/BEI-1" in remote_refs(origin)
+
+
+def test_delete_branches_without_the_branch_on_origin_does_nothing(origin):
+    assert cleanup.delete_branches("BEI-2") is None
+    assert "refs/heads/fix/BEI-1" in remote_refs(origin)

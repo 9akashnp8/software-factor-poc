@@ -36,7 +36,7 @@ pr-opened → plan-rework-queued → … → plan-generated-for-review         (
 needs-attention → pr-open-queued → agent-work-completed → pr-opened    (Open PR)
 merged, deployed or released, back in Todo → queued                   (triaged again with history)
 plan-generated-for-review → awaiting-qa-answer → plan-rework-queued        (QA question posted, then QA answered)
-queued / plan-generated-for-review / awaiting-qa-answer / needs-attention → release-queued → releasing → released
+queued / plan-generated-for-review / awaiting-qa-answer / pr-opened / pr-update-queued / needs-attention → release-queued → releasing → released
 anything → needs-attention (the reason is on the issue page)
 ```
 
@@ -347,10 +347,14 @@ plan or branch. It's a warning only: approving both is fine.
 
 ## Releasing an issue
 
-**Release** (on queued, planned and needs-attention issues) gives up on an issue. The
-worker tears down what it holds, as after a merge but keeping the remote branch, and marks
-it `released`. Linear and any
-PR are left as they are. Use it for an abandoned PR, or a bug you decide not to fix. If QA
+**Release** (on queued, planned, PR-opened and needs-attention issues) gives up on an
+issue. If it has a PR that's still open, the worker comments on it and abandons it in Azure
+DevOps, then deletes the branch on origin: only `refs/heads/fix/<identifier>`, only if the
+PR's source is that branch, and only while it's still at the PR's last commit (a branch
+someone pushed to since is kept, and the issue's history says so). It then tears down what the issue holds, as after
+a merge, and marks it `released`. A PR that merged before the release got to it is cleaned
+up as merged instead. Linear is left as it is. Use it for a bug that turned out not to need
+a fix (a network blip, a duplicate), one you decide not to fix, or an abandoned PR. If QA
 later moves the issue back to Todo, it's triaged again.
 
 ## Open PR

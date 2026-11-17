@@ -9,7 +9,7 @@ import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, RateLimitEvent, RateLimitInfo, ResultMessage
 
 from conftest import git, seed_issue
-from software_factory import config, store
+from software_factory import config, plan_questions, store
 
 main = importlib.import_module("software_factory.main")
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -692,3 +692,69 @@ def test_rerun_runs_the_command_in_the_worktree(tmp_path):
     passed, output = main.rerun_test(issue(), tmp_path, 'python -c "print(42); raise SystemExit(3)"')
     assert (passed, output) == (False, "42")
     assert main.rerun_test(issue(), tmp_path, 'python -c "print(1)"') == (True, "1")
+
+
+# A reviewer's question about a plan in review
+
+
+@pytest.fixture
+def ask(monkeypatch, tmp_path: Path):
+    """An issue whose plan the planner is asked about, by akash, with its worktree stubbed out."""
+    ws = seed_issue(store.PLAN_READY)
+    (ws / "plan.md").write_text("# Plan", encoding="utf-8")
+    store.set_fields("issue-1", pending_feedback="Why not fix the caller?")
+    store.transition("issue-1", store.ASK_QUEUED, actor="akash")
+    store.transition("issue-1", store.ASKING, actor="worker")
+    monkeypatch.setattr(main, "ensure_worktree", lambda _: tmp_path)
+
+    def run():
+        anyio.run(main.answer_question, "issue-1")
+
+    run.ws = ws
+    return run
+
+
+def test_a_question_is_answered_in_the_planners_session_and_the_plan_stays(ask, monkeypatch):
+    sessions = fake_agent(monkeypatch, results=[result(text="Three callers share it, so the fix goes in the helper.")])
+    ask()
+    assert (issue()["status"], issue()["pending_feedback"]) == (store.PLAN_READY, None)
+    assert last_event() == "Question answered"
+    assert (ask.ws / "plan.md").read_text(encoding="utf-8") == "# Plan"
+    (entry,) = plan_questions.load(ask.ws)
+    assert (entry["question"], entry["asked_by"], entry["answer"]) == (
+        "Why not fix the caller?", "akash", "Three callers share it, so the fix goes in the helper."
+    )
+    assert entry["run_id"] == store.runs("issue-1")[-1]["id"]
+    prompt, options = sessions[0].prompt, sessions[0].options
+    assert "<question>\nWhy not fix the caller?\n</question>" in prompt
+    assert (options.permission_mode, options.resume, options.max_turns) == ("plan", "s", main.LIMITS["ask"]["max_turns"])
+
+
+def test_answering_cant_revise_the_plan(ask, monkeypatch):
+    sessions = fake_agent(monkeypatch, results=[result(text="It holds.")])
+    ask()
+    can_use_tool = sessions[0].options.can_use_tool
+    refused = anyio.run(can_use_tool, "ExitPlanMode", {"plan": "# Revised"}, None)
+    assert isinstance(refused, PermissionResultDeny) and not refused.interrupt
+    plan_file = str(main.PLANS_DIR / "plan.md")
+    record = str(ask.ws / main.reproduction.FILE)
+    for path in (plan_file, record):
+        assert isinstance(anyio.run(can_use_tool, "Write", {"file_path": path}, None), PermissionResultDeny)
+    assert (ask.ws / "plan.md").read_text(encoding="utf-8") == "# Plan"
+    assert isinstance(anyio.run(can_use_tool, "Read", {"file_path": str(ask.ws / "issue.md")}, None), PermissionResultAllow)
+
+
+def test_a_question_that_isnt_answered_goes_back_to_review_and_says_so(ask, monkeypatch):
+    fake_agent(monkeypatch, results=[result("error_max_turns", is_error=True, text="")])
+    ask()
+    assert issue()["status"] == store.PLAN_READY
+    assert last_event().startswith("The question wasn't answered (error_max_turns")
+    (entry,) = plan_questions.load(ask.ws)
+    assert (entry["question"], entry["answer"]) == ("Why not fix the caller?", None)
+
+
+def test_a_rate_limited_question_is_asked_again_later(ask, monkeypatch):
+    fake_agent(monkeypatch, results=[rejected(int(time.time()) + 900), result("error_during_execution", is_error=True, text="")])
+    ask()
+    assert (issue()["status"], issue()["pending_feedback"]) == (store.ASK_QUEUED, "Why not fix the caller?")
+    assert plan_questions.load(ask.ws) == []

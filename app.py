@@ -12,7 +12,9 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from software_factory import config, dev_changes, evidence, factory_log, home, linear, metrics, reproduction, store
+from software_factory import (
+    config, dev_changes, evidence, factory_log, home, linear, metrics, plan_questions, reproduction, store,
+)
 from software_factory import run_transcript as transcripts
 from software_factory.environment import branch_name
 from software_factory.overlap import overlaps
@@ -164,6 +166,10 @@ def issue_detail(issue_id):
         pr=_pull_request(issue),
         repro=repro,
         verification=render_md(verified) if verified else None,
+        questions=plan_questions.load(ws),
+        # The question the planner is answering now, shown until its answer is recorded
+        open_question={"question": issue["pending_feedback"], "asked_by": plan_questions.asked_by(events)}
+        if issue["status"] in (store.ASK_QUEUED, store.ASKING) else None,
         screenshots=evidence.screenshots(ws),
         repro_look=REPRODUCTION_LOOK.get(repro["status"]) if repro else None,
         # A chat bug can be replayed, so anything else is weaker evidence
@@ -245,6 +251,16 @@ def approve_plan(issue_id: str):
 def rework_plan(issue_id: str):
     feedback = request.form.get("feedback", "").strip()
     return _queue(issue_id, "rework", plan_reviewed_by=request.authorization.username, pending_feedback=feedback)
+
+@app.route("/issue/<issue_id>/ask-question", methods=["POST"])
+def ask_question(issue_id: str):
+    """Ask the planner about its plan; the plan stays as it is and comes back with the answer."""
+    question = request.form.get("question", "").strip()
+    if not question:
+        _issue_or_404(issue_id)
+        flash("Write the question before asking it.")
+        return redirect(url_for("issue_detail", issue_id=issue_id))
+    return _queue(issue_id, "ask", pending_feedback=question)
 
 @app.route("/issue/<issue_id>/refresh-plan", methods=["POST"])
 def refresh_plan(issue_id: str):

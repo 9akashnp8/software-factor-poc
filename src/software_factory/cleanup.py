@@ -77,17 +77,48 @@ def remove_worktree(identifier: str):
     _git("worktree", "prune")
 
 
-def delete_branches(identifier: str, remote: bool = True):
+def remote_tip(ref: str) -> str | None:
+    """The commit origin's ref points at, matching the full ref name exactly."""
+    # ls-remote matches patterns against the end of ref names, so check each one it lists
+    for line in _git("ls-remote", "origin", ref).stdout.splitlines():
+        sha, _, name = line.partition("	")
+        if name == ref:
+            return sha
+    return None
+
+
+def delete_branches(identifier: str, remote: bool = True, expected_tip: str | None = None) -> str | None:
+    """Delete the issue's local branch and, with remote, its branch on origin.
+
+    Only refs/heads/fix/<identifier> is touched, by its full name. On origin it's deleted
+    only while it still points at the commit we saw: expected_tip when given (the PR's last
+    pushed commit), else the tip ls-remote reported. A branch someone pushed to since is
+    kept; the returned note says so, for the issue's history.
+    """
     branch = branch_name(identifier)
     if _git("branch", "--list", branch).stdout.strip():
         _git("branch", "-D", branch)
     # Azure DevOps deletes the source branch on completion only when asked to
-    if remote and _git("ls-remote", "--heads", "origin", branch).stdout.strip():
-        _git("push", "origin", "--delete", branch)
+    if not remote:
+        return None
+    ref = f"refs/heads/{branch}"
+    tip = remote_tip(ref)
+    if tip is None:
+        return None
+    if expected_tip is not None and tip != expected_tip:
+        return f"Kept {branch} on origin: it's at {tip[:8]}, not the PR's {expected_tip[:8]}, so someone pushed to it"
+    # The lease makes origin refuse the delete if the branch moved after ls-remote
+    _git("push", f"--force-with-lease={ref}:{tip}", "origin", f":{ref}")
+    return None
 
 
 async def teardown(
-    issue_id: str, final_status: str | None, why: str, delete_remote: bool = False, flag: bool = True
+    issue_id: str,
+    final_status: str | None,
+    why: str,
+    delete_remote: bool = False,
+    flag: bool = True,
+    remote_tip: str | None = None,
 ) -> bool:
     """Remove the issue's databases, Redis queue, worktree and local branch, then free its slot.
 
@@ -95,8 +126,8 @@ async def teardown(
     flag, puts the issue in needs-attention; without, it's only recorded, so the caller's
     status stands and the teardown can be run again later. why names the occasion, e.g.
     "PR merged". With final_status None the status is left for the caller. The remote
-    branch goes only with delete_remote, since an open PR lives on it. Returns whether
-    every step finished.
+    branch goes only with delete_remote, since an open PR lives on it, and with remote_tip
+    only while it still points there. Returns whether every step finished.
     """
     issue = store.get_issue(issue_id)
     identifier = issue["identifier"]
@@ -113,12 +144,12 @@ async def teardown(
     if has_resources:
         steps += [
             ("removing the worktree", lambda: remove_worktree(identifier)),
-            ("deleting the branch", lambda: delete_branches(identifier, remote=delete_remote)),
+            ("deleting the branch", lambda: delete_branches(identifier, remote=delete_remote, expected_tip=remote_tip)),
         ]
 
     for name, step in steps:
         try:
-            await anyio.to_thread.run_sync(step)
+            note = await anyio.to_thread.run_sync(step)
         except Exception as e:
             traceback.print_exc()
             detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) and e.stderr else str(e)
@@ -128,6 +159,8 @@ async def teardown(
             else:
                 store.add_event_once(issue_id, f"{reason}. It's retried on every PR check.")
             return False
+        if isinstance(note, str):
+            store.add_event_once(issue_id, note)
 
     # A later attempt gets a new database, so it must provision again
     (store.issue_dir(issue_id) / ".provisioned").unlink(missing_ok=True)
@@ -156,6 +189,12 @@ async def cleanup_after_merge(issue_id: str, merge_commit: str | None = None, me
     return await teardown(issue_id, None, "PR merged", delete_remote=True, flag=False)
 
 
-async def release(issue_id: str) -> bool:
-    """Give up on the issue: tear down what it holds. Linear and any PR are left as they are."""
-    return await teardown(issue_id, store.RELEASED, "Released")
+async def release(issue_id: str, remote_tip: str | None = None) -> bool:
+    """Give up on the issue: tear down what it holds.
+
+    With remote_tip, the branch on origin goes too, if it's still at that commit.
+    Linear is left as it is; pull_requests.release abandons an open PR first.
+    """
+    return await teardown(
+        issue_id, store.RELEASED, "Released", delete_remote=remote_tip is not None, remote_tip=remote_tip
+    )

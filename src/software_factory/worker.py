@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 import anyio
 import httpx
 
-from software_factory import cleanup, config, factory_log, logs, pull_requests, reset, store
+from software_factory import config, factory_log, logs, pull_requests, reset, store
 from software_factory.environment import fetch_base
 from software_factory.linear import LinearError, list_todo_bugs
 
@@ -64,9 +64,11 @@ async def run_job(issue_id: str, job: str):
     elif job == "update":
         await pipeline.update_pull_request(issue_id, owner="worker")
     elif job == "release":
-        await cleanup.release(issue_id)
+        await pull_requests.release(issue_id)
     elif job == "refresh":
         await pipeline.refresh_plan(issue_id, owner="worker")
+    elif job == "ask":
+        await pipeline.answer_question(issue_id, owner="worker")
     else:
         feedback = store.get_issue(issue_id)["pending_feedback"]
         await pipeline.implement_and_review(issue_id, False, feedback, owner="worker")
