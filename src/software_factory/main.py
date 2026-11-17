@@ -82,6 +82,19 @@ Workflow:
 4. Analyze the codebase thoroughly to understand what is actually causing the issue.
 5. Fix the root cause with the smallest change, and add or update a test where one fits.
 
+While planning:
+- You run in plan mode, which stops you editing the repo, not reproducing the bug. Running
+  `$SF_REPLAY`, tests and the app, and writing under $SF_WORKSPACE (replays/, evidence/,
+  reproduction.json), are allowed and expected. Try the reproduction before deciding it can't
+  be done; only if a command is actually denied, record "not_attempted" with the reason.
+  Describe source changes in the plan; don't make them.
+- When you're asked to write or revise a plan, end the same way every time: write
+  reproduction.json first, then call ExitPlanMode with the plan. ExitPlanMode refuses until
+  reproduction.json is valid, so it can't wait for approval. Only ExitPlanMode saves a plan.
+  A plan or diagnosis written as a chat reply is discarded. If ExitPlanMode isn't loaded,
+  load it with ToolSearch. (A reviewer's question about your plan is the exception: answer
+  it in a reply, as that prompt says.)
+
 Your worktree has a slot of its own: its ports, database and Redis queue are already set in
 your environment. To run the app, follow docs/agents/running-the-app.md. The api reads its
 model keys and other settings from the worktree's .env, so they aren't in your environment.
@@ -298,6 +311,21 @@ saying what changed and why, then present it for review with ExitPlanMode.
 
 If it doesn't, don't call ExitPlanMode. Reply in one or two sentences saying why the plan
 still holds.
+"""
+
+PLAN_NUDGE_PROMPT = """
+Your planning run ended without presenting a plan, so nothing was saved. Only ExitPlanMode
+saves a plan; what you wrote in a chat reply is discarded.
+
+Do this now, without redoing work you've finished:
+1. Make sure {reproduction} exists, shaped like:
+{shape}
+   Plan mode allows `$SF_REPLAY` and writes under $SF_WORKSPACE, so try the reproduction if you
+   haven't. If it couldn't be tried, use status "not_attempted" with the reason and plan from
+   the code.
+2. Call ExitPlanMode with the plan. If it isn't loaded, load it with ToolSearch.
+
+Nobody can answer questions during planning: state any assumption in the plan's open questions.
 """
 
 UPDATE_PROMPT = """
@@ -786,6 +814,34 @@ def check_plan_outcome(issue_id: str, result: ResultMessage | None, during: str)
     )
 
 
+async def run_planning(
+    issue_id: str, phase: str, options: ClaudeAgentOptions, prompt: str, owner: str, during: str
+) -> ResultMessage | None:
+    """Run a planning agent, and check that it saved a plan.
+
+    A planner that ends its turn on its own with no plan, usually having written its findings
+    as a chat reply, gets one reminder in the same session before the issue is flagged. A crash,
+    a rate limit or a run cut off by a limit isn't the planner stopping, so it isn't nudged.
+    """
+    result = await run_agent(issue_id, phase, options, prompt, owner)
+    issue = store.get_issue(issue_id)
+    if (
+        result is not None
+        and result.subtype == "success"
+        and not result.is_error
+        and issue["status"] == during
+        and issue["session_id"]
+    ):
+        log.info("%s run ended without a plan, reminding the planner once", phase)
+        store.add_event(issue_id, "The planner ended without a plan; asked it to save one")
+        nudge = PLAN_NUDGE_PROMPT.format(
+            reproduction=store.issue_dir(issue_id) / reproduction.FILE, shape=reproduction.SHAPE
+        )
+        result = await run_agent(issue_id, phase, replace(options, resume=issue["session_id"]), nudge, owner)
+    check_plan_outcome(issue_id, result, during=during)
+    return result
+
+
 def planning_options(issue, worktree: Path, ws: Path, answering: bool = False, **extra) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=config.PLAN_MODEL,
@@ -953,7 +1009,8 @@ async def gather_context(bug_info: dict, ws: Path) -> str | None:
 
     sections.append(
         "Let's plan how to fix the bug described in <issue>. Reproduce it first, and write "
-        f"what happened to {ws / reproduction.FILE}, shaped like:\n{reproduction.SHAPE}"
+        f"what happened to {ws / reproduction.FILE}, shaped like:\n{reproduction.SHAPE}\n\n"
+        "Finish by calling ExitPlanMode with the plan: a plan written as a chat reply isn't saved."
     )
     bug_prompt = "\n\n".join(sections)
 
@@ -986,8 +1043,7 @@ async def triage_and_plan_issue(issue_id: str, owner: str = "cli"):
         store.transition(issue_id, store.NEEDS_ATTENTION, reason=f"Gathering context failed: {e!r}")
         return
 
-    result = await run_agent(issue_id, "plan", options, bug_prompt, owner)
-    check_plan_outcome(issue_id, result, during=store.PLANNING)
+    await run_planning(issue_id, "plan", options, bug_prompt, owner, during=store.PLANNING)
     log.info("Triage done: %s", store.get_issue(issue_id)["status"])
 
 
@@ -998,8 +1054,7 @@ async def rework_plan(issue_id: str, feedback: str | None, owner: str = "cli"):
     # An empty prompt would resume the session with no instruction, which the
     # agent reads as the earlier ExitPlanMode denial.
     prompt = REWORK_PROMPT.format(feedback=feedback or "No specific feedback given.")
-    result = await run_agent(issue_id, "rework", options, prompt, owner)
-    check_plan_outcome(issue_id, result, during=store.REWORKING)
+    await run_planning(issue_id, "rework", options, prompt, owner, during=store.REWORKING)
 
 
 async def answer_question(issue_id: str, owner: str = "cli"):

@@ -39,11 +39,11 @@ def write_reproduction(record=REPRODUCED, issue_id="issue-1"):
     (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
 
 
-def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=None, reproduction=REPRODUCED, hang=False):
+def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, exit_plan_from=0, work=None, reproduction=REPRODUCED, hang=False):
     """Replace ClaudeSDKClient. exit_plan, if given, is sent to the session's callback as
-    ExitPlanMode input, after writing reproduction (if any) as the planner's record; work,
-    if given, is called as the agent's edits and commits. hang leaves the session open,
-    sending nothing more, after the last message."""
+    ExitPlanMode input, after writing reproduction (if any) as the planner's record, from the
+    exit_plan_from-th session on (0 is the first); work, if given, is called as the agent's
+    edits and commits. hang leaves the session open, sending nothing more, after the last message."""
     sessions = []
 
     class FakeClient:
@@ -61,7 +61,7 @@ def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, work=No
             self.prompt = prompt
 
         async def receive_messages(self):
-            if exit_plan is not None:
+            if exit_plan is not None and sessions.index(self) >= exit_plan_from:
                 if reproduction is not None:
                     write_reproduction(reproduction)
                 await self.options.can_use_tool("ExitPlanMode", exit_plan, None)
@@ -255,11 +255,39 @@ def test_triage_gives_agent_reachable_context_and_saves_plan(triage, monkeypatch
     assert issue()["plan_base"] == git(main.ensure_worktree(None), "rev-parse", "HEAD")
 
 
-def test_planner_ending_without_a_plan_needs_attention(triage, monkeypatch):
-    fake_agent(monkeypatch, results=[result(text="Which database should I use?")])
+def test_planner_ending_without_a_plan_is_reminded_once_then_needs_attention(triage, monkeypatch):
+    sessions = fake_agent(monkeypatch, results=[result(text="Which database should I use?")])
     triage(bug())
+    assert len(sessions) == 2
+    reminder, options = sessions[1].prompt, sessions[1].options
+    assert "ExitPlanMode" in reminder and str(store.issue_dir("issue-1") / "reproduction.json") in reminder
+    assert (options.resume, options.permission_mode) == ("s2", "plan")
     assert issue()["status"] == store.NEEDS_ATTENTION
     assert "Which database should I use?" in issue()["needs_attention_reason"]
+    assert [r["phase"] for r in store.runs("issue-1")] == ["plan", "plan"]
+
+
+def test_planner_that_saves_its_plan_after_the_reminder_goes_to_review(triage, monkeypatch):
+    sessions = fake_agent(monkeypatch, exit_plan={"plan": "# Plan"}, exit_plan_from=1)
+    triage(bug())
+    assert len(sessions) == 2
+    assert issue()["status"] == store.PLAN_READY
+    assert (store.issue_dir("issue-1") / "plan.md").read_text() == "# Plan"
+    assert "The planner ended without a plan; asked it to save one" in [e["detail"] for e in store.events("issue-1")]
+
+
+def test_planner_that_saves_its_plan_is_not_reminded(triage, monkeypatch):
+    sessions = fake_agent(monkeypatch, exit_plan={"plan": "# Plan"})
+    triage(bug())
+    assert len(sessions) == 1 and issue()["status"] == store.PLAN_READY
+
+
+@pytest.mark.parametrize("ended", [result("error_max_turns", is_error=True, text=""), None])
+def test_planner_cut_off_or_crashed_is_not_reminded(triage, monkeypatch, ended):
+    error = RuntimeError("CLI exited") if ended is None else None
+    sessions = fake_agent(monkeypatch, results=[ended] if ended else None, error=error)
+    triage(bug())
+    assert len(sessions) == 1 and issue()["status"] == store.NEEDS_ATTENTION
 
 
 # Implementation and rework
@@ -337,6 +365,14 @@ def test_rework_saves_new_plan_without_touching_report(monkeypatch, pr_calls):
     assert (ws / "report.md").read_text() == "old report"
     assert "Check the router" in sessions[0].prompt
     assert sessions[0].options.permission_mode == "plan"
+
+
+def test_rework_ending_without_a_plan_is_reminded_once(monkeypatch, pr_calls):
+    seed_issue(store.REWORKING)
+    sessions = fake_agent(monkeypatch, exit_plan={"plan": "# Revised"}, exit_plan_from=1)
+    anyio.run(main.implement_and_review, "issue-1", False, "Check the router")
+    assert len(sessions) == 2 and "ExitPlanMode" in sessions[1].prompt
+    assert issue()["status"] == store.PLAN_READY
 
 
 # Refreshing a plan in review against the latest dev

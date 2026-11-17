@@ -51,6 +51,12 @@ must apply to every call belongs in a PreToolUse hook.
 
 The callback is `plan_phase_can_use_tool` in `src/software_factory/main.py`.
 
+Plan mode's own instructions tell the model not to change anything, and a planner can read
+that as a ban on the replay and on `reproduction.json`, though the callback allows both. The
+system prompt says they're allowed. A planner that still ends its turn with no plan (its
+findings as a chat reply, say) gets one reminder in the same session (`run_planning`) before
+the issue is flagged.
+
 ### What we observed (haiku, SDK 0.2.174, November 2026)
 
 A live planning session was told to read a workspace file, `Edit` a source file, run
