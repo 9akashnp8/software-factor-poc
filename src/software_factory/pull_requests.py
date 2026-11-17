@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import httpx
 
 from software_factory import cleanup, config, deployments, factory_log, review_comments, store
+from software_factory.environment import branch_name
 from software_factory.utils import ado_time as _time, ssl_context
 
 log = logging.getLogger(__name__)
@@ -96,6 +97,57 @@ async def set_description(client: httpx.AsyncClient, pr_id: int, description: st
 
 def _commit(pr: dict, key: str) -> str | None:
     return (pr.get(key) or {}).get("commitId")
+
+
+ABANDON_COMMENT = (
+    "**Software Factory:** Abandoned: the issue was released in the factory, so this fix "
+    "is no longer needed. Its branch is deleted."
+)
+
+
+async def abandon_pull_request(client: httpx.AsyncClient, pr_id: int):
+    """Say why on the PR, then abandon it."""
+    result = await client.post(
+        f"{config.ADO_REPO_API}/pullRequests/{pr_id}/threads",
+        # status 4 is closed: a note, not something for anyone to resolve
+        json={"comments": [{"content": ABANDON_COMMENT, "commentType": 1}], "status": 4},
+    )
+    result.raise_for_status()
+    result = await client.patch(f"{config.ADO_REPO_API}/pullrequests/{pr_id}", json={"status": "abandoned"})
+    result.raise_for_status()
+
+
+async def release(issue_id: str) -> bool:
+    """Give up on the issue: abandon its PR if it's still open, delete its branch on origin
+    and tear down what it holds. Linear is left as it is.
+
+    A PR that merged before the release got to it is a real merge, so the issue is cleaned
+    up as merged instead. Returns whether the teardown finished.
+    """
+    issue = store.get_issue(issue_id)
+    if issue["pr_id"] is None:
+        return await cleanup.release(issue_id)
+    async with ado_client() as client:
+        pr = await get_pull_request(client, issue["pr_id"])
+        # A PR id that points at another branch is a bug somewhere: touch neither
+        ours = f"refs/heads/{branch_name(issue['identifier'])}"
+        if pr.get("sourceRefName") != ours:
+            raise RuntimeError(
+                f"PR {issue['pr_id']} is from {pr.get('sourceRefName')}, not {ours}; "
+                "left it and its branch alone"
+            )
+        if pr["status"] == "completed":
+            store.add_event(issue_id, f"Not released: PR {issue['pr_id']} merged first")
+            return await cleanup.cleanup_after_merge(issue_id, _commit(pr, "lastMergeCommit"), pr.get("closedDate"))
+        if pr["status"] == "active":
+            await abandon_pull_request(client, issue["pr_id"])
+            store.add_event(issue_id, f"PR {issue['pr_id']} abandoned")
+    # Nothing else uses the branch once its PR is abandoned. Delete it only at the commit
+    # the PR last had; without one, keep it
+    tip = _commit(pr, "lastMergeSourceCommit")
+    if tip is None:
+        store.add_event(issue_id, f"Kept {ours} on origin: PR {issue['pr_id']} doesn't say which commit it had")
+    return await cleanup.release(issue_id, remote_tip=tip)
 
 
 async def check_pull_request(client: httpx.AsyncClient, issue) -> str | None:

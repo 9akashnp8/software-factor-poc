@@ -63,7 +63,7 @@ DEPLOYED = "deployed"
 PUBLISH_QUEUED = "pr-open-queued"
 RELEASE_QUEUED = "release-queued"
 RELEASING = "releasing"
-# Given up on: the worktree, branch and slot are gone, and the PR, if any, is left as it is
+# Given up on: the worktree, branch and slot are gone, and an open PR was abandoned
 RELEASED = "released"
 NEEDS_ATTENTION = "needs-attention"
 
@@ -75,7 +75,8 @@ ACTIONS = {
     "refresh": frozenset({PLAN_READY}),
     "ask": frozenset({PLAN_READY}),
     "retry": frozenset({NEEDS_ATTENTION}),
-    "release": frozenset({QUEUED, PLAN_READY, AWAITING_QA, NEEDS_ATTENTION}),
+    # No agent is running in any of these; with a PR open, releasing abandons it
+    "release": frozenset({QUEUED, PLAN_READY, AWAITING_QA, PR_OPENED, UPDATE_QUEUED, NEEDS_ATTENTION}),
     "publish": frozenset({NEEDS_ATTENTION}),
 }
 ACTION_QUEUES = {

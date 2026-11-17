@@ -451,3 +451,12 @@ def test_transcript_of_an_unknown_run_or_a_run_without_one_is_404(client, ws):
     run_id = store.start_run("issue-1", "plan", "worker")
     assert client.get(f"/issue/issue-1/runs/{run_id}/transcript", headers=AUTH).status_code == 404
     assert client.get(f"/issue/issue-1/runs/{run_id}/transcript.jsonl", headers=AUTH).status_code == 404
+
+
+def test_an_issue_with_an_open_pr_can_be_released(client, ws):
+    store.set_fields("issue-1", pr_url="https://ado/pr/7", pr_id=7)
+    store.transition("issue-1", store.PR_OPENED)
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "its PR is abandoned" in page
+    client.post("/issue/issue-1/release", headers=AUTH, data={"csrf_token": csrf_token(client)})
+    assert store.get_issue("issue-1")["status"] == store.RELEASE_QUEUED
