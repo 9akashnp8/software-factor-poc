@@ -53,7 +53,10 @@ def test_allowed_actions_need_a_plan_and_session():
     assert store.allowed_actions(store.get_issue("issue-1")) == ["release"]
     (ws / "plan.md").write_text("# Plan")
     assert store.allowed_actions(store.get_issue("issue-1")) == ["approve", "rework", "refresh", "release"]
+    # With a PR open, releasing abandons it
     store.transition("issue-1", store.PR_OPENED)
+    assert store.allowed_actions(store.get_issue("issue-1")) == ["release"]
+    store.transition("issue-1", store.UPDATING)
     assert store.allowed_actions(store.get_issue("issue-1")) == []
 
 

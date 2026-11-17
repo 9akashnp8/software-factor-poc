@@ -280,11 +280,15 @@
             {% if 'release' in actions %}
             <li class="sf-action">
                 <form method="post" action="{{ url_for('release_issue', issue_id=issue.id) }}"
-                      onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear and any PR are left as they are.');">
+                      {% if issue.pr_url %}
+                      onsubmit="return confirm('Abandon this issue\'s PR if it\'s still open, delete its branch on origin, drop its database and remove its worktree? Uncommitted work in the worktree is lost. Linear is left as it is.');"
+                      {% else %}
+                      onsubmit="return confirm('Drop this issue\'s database and remove its worktree and branch? Uncommitted work in the worktree is lost. Linear is left as it is.');"
+                      {% endif %}>
                     {{ ui.csrf() }}
                     <button type="submit" class="sf-btn sf-btn-danger">{{ ui.icon("x") }}<span>Release</span></button>
                 </form>
-                <p>Give up on this issue and free its slot.</p>
+                <p>Give up on this issue and free its slot{% if issue.pr_url %}; its PR is abandoned{% endif %}.</p>
             </li>
             {% endif %}
         </ul>

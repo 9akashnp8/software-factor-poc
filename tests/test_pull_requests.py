@@ -1,3 +1,4 @@
+import json
 import anyio
 import httpx
 import pytest
@@ -11,6 +12,7 @@ SOURCE, TARGET = "src1", "tgt1"
 def pr(status="active", merge_status="succeeded", source=SOURCE, target=TARGET) -> dict:
     return {
         "status": status,
+        "sourceRefName": "refs/heads/fix/BEI-1",
         "mergeStatus": merge_status,
         "lastMergeSourceCommit": {"commitId": source},
         "lastMergeTargetCommit": {"commitId": target},
@@ -94,6 +96,65 @@ def test_abandoned_pr_needs_attention(ado, merged):
     assert issue()["status"] == store.NEEDS_ATTENTION
     assert merged == []
 
+
+
+@pytest.fixture
+def released(monkeypatch) -> list:
+    calls = []
+
+    async def fake_release(issue_id, remote_tip=None):
+        calls.append((issue_id, remote_tip))
+        return True
+
+    monkeypatch.setattr(pull_requests.cleanup, "release", fake_release)
+    return calls
+
+
+def writes(ado) -> list[tuple[str, str]]:
+    return [(r.method, r.url.path.rsplit("/", 1)[-1]) for r in ado["requests"] if r.method != "GET"]
+
+
+def test_release_abandons_an_open_pr_and_its_branch(ado, merged, released):
+    seed_issue(store.RELEASING, pr_id=7)
+    assert anyio.run(pull_requests.release, "issue-1")
+    # The note first, so the PR says why it was abandoned
+    assert writes(ado) == [("POST", "threads"), ("PATCH", "7")]
+    assert json.loads(ado["requests"][-1].content) == {"status": "abandoned"}
+    # The branch goes only at the commit the PR had
+    assert released == [("issue-1", SOURCE)]
+    assert "PR 7 abandoned" in [e["detail"] for e in store.events("issue-1")]
+
+
+def test_release_of_an_already_abandoned_pr_only_deletes_the_branch(ado, merged, released):
+    seed_issue(store.RELEASING, pr_id=7)
+    ado["pr"] = pr(status="abandoned")
+    anyio.run(pull_requests.release, "issue-1")
+    assert writes(ado) == []
+    assert released == [("issue-1", SOURCE)]
+
+
+def test_release_of_a_pr_that_merged_first_cleans_up_the_merge(ado, merged, released):
+    seed_issue(store.RELEASING, pr_id=7)
+    ado["pr"] = pr(status="completed")
+    anyio.run(pull_requests.release, "issue-1")
+    assert writes(ado) == []
+    assert (merged, released) == (["issue-1"], [])
+
+
+def test_release_without_a_pr_doesnt_call_azure_devops(ado, released):
+    seed_issue(store.RELEASING)
+    anyio.run(pull_requests.release, "issue-1")
+    assert ado["requests"] == []
+    assert released == [("issue-1", None)]
+
+
+def test_release_leaves_a_pr_from_another_branch_alone(ado, merged, released):
+    seed_issue(store.RELEASING, pr_id=7)
+    ado["pr"] = {**pr(), "sourceRefName": "refs/heads/feature/payroll"}
+    with pytest.raises(RuntimeError, match="feature/payroll"):
+        anyio.run(pull_requests.release, "issue-1")
+    assert writes(ado) == []
+    assert released == []
 
 def test_green_pr_is_left_alone(ado, merged):
     seed_issue(store.PR_OPENED, pr_id=7)
