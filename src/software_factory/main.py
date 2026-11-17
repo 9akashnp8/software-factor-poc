@@ -667,7 +667,16 @@ async def receive_run(client: ClaudeSDKClient):
         elif isinstance(msg, (AssistantMessage, UserMessage)):
             waiting_until = None
         elif isinstance(msg, ResultMessage):
-            if msg.is_error or not running:
+            if msg.is_error:
+                return
+            if msg.num_turns == 0:
+                # A resumed session first reports the background tasks the previous process
+                # left behind, as a turn of its own that never calls the model. The prompt's
+                # turn comes after it, so this result isn't the end of the run.
+                log.info("A resumed session reported a turn with no work in it, waiting for the prompt's turn")
+                waiting_until = anyio.current_time() + BACKGROUND_WAIT_SECONDS
+                continue
+            if not running:
                 return
             log.info("Turn ended with background tasks running, waiting for them: %s", ", ".join(running.values()))
             waiting_until = anyio.current_time() + BACKGROUND_WAIT_SECONDS
@@ -745,7 +754,10 @@ async def run_agent(
         log.warning("%s run %s gave up waiting for its background tasks: %s", phase, run_id, e)
         transcript.error(e)
         minutes = BACKGROUND_WAIT_SECONDS // 60
-        error = f"The {phase} run ended its turn and its background tasks were still running after {minutes} min: {e}"
+        if str(e):
+            error = f"The {phase} run ended its turn and its background tasks were still running after {minutes} min: {e}"
+        else:
+            error = f"The {phase} run's session had no turn for its prompt after {minutes} min"
         crashed = True
     except Exception as e:
         log.exception("%s run %s crashed", phase, run_id)
