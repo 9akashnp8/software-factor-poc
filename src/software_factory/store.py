@@ -39,6 +39,10 @@ REWORKING = "plan-rework-requested-agent-planning"
 # Re-checking a plan in review against the dev it didn't see; it comes back to PLAN_READY
 REFRESH_QUEUED = "plan-refresh-queued"
 REFRESHING = "plan-refresh-agent-planning"
+# A reviewer's question about a plan in review: the planner answers it without changing the
+# plan, and the issue comes back to PLAN_READY with the answer
+ASK_QUEUED = "plan-question-queued"
+ASKING = "plan-question-agent-answering"
 REVIEWING = "reviewing"
 # The factory checks the implementer's verification before the PR; a failed check goes
 # back to the implementer once, in this status too
@@ -69,6 +73,7 @@ ACTIONS = {
     "approve": frozenset({PLAN_READY, NEEDS_ATTENTION}),
     "rework": frozenset({PLAN_READY, AWAITING_QA, NEEDS_ATTENTION}),
     "refresh": frozenset({PLAN_READY}),
+    "ask": frozenset({PLAN_READY}),
     "retry": frozenset({NEEDS_ATTENTION}),
     "release": frozenset({QUEUED, PLAN_READY, AWAITING_QA, NEEDS_ATTENTION}),
     "publish": frozenset({NEEDS_ATTENTION}),
@@ -77,15 +82,17 @@ ACTION_QUEUES = {
     "approve": IMPLEMENT_QUEUED,
     "rework": REWORK_QUEUED,
     "refresh": REFRESH_QUEUED,
+    "ask": ASK_QUEUED,
     "retry": QUEUED,
     "release": RELEASE_QUEUED,
     "publish": PUBLISH_QUEUED,
 }
 
-# What the worker picks up, in priority order: a person is waiting on the first five
+# What the worker picks up, in priority order: a person is waiting on the first six
 JOBS = [
     (IMPLEMENT_QUEUED, IMPLEMENTING, "implement"),
     (PUBLISH_QUEUED, WORK_COMPLETED, "publish"),
+    (ASK_QUEUED, ASKING, "ask"),
     (REWORK_QUEUED, REWORKING, "rework"),
     (REFRESH_QUEUED, REFRESHING, "refresh"),
     (UPDATE_QUEUED, UPDATING, "update"),
@@ -106,13 +113,15 @@ REQUEUE_TO = {
     WORK_COMPLETED: PUBLISH_QUEUED,
     REWORKING: REWORK_QUEUED,
     REFRESHING: REFRESH_QUEUED,
+    ASKING: ASK_QUEUED,
     UPDATING: UPDATE_QUEUED,
     RELEASING: RELEASE_QUEUED,
 }
 # Plans that are, or will soon be, waiting on a person's review. AWAITING_QA isn't one: QA
 # may take days to answer, and new bugs shouldn't wait on that
 REVIEW_LOAD = frozenset(
-    {GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING, REFRESH_QUEUED, REFRESHING}
+    {GATHERING_CONTEXT, PLANNING, PLAN_READY, REWORK_QUEUED, REWORKING, REFRESH_QUEUED, REFRESHING,
+     ASK_QUEUED, ASKING}
 )
 # Reaching one of these ends a run of rate-limit retries
 MILESTONES = frozenset({PLAN_READY, PR_OPENED, MERGED, DEPLOY_PENDING, DEPLOYED})
@@ -748,7 +757,7 @@ def allowed_actions(issue: sqlite3.Row) -> list[str]:
     has_plan = bool(issue["session_id"]) and (issue_dir(issue["id"]) / "plan.md").exists()
     actions = []
     if has_plan:
-        actions += [a for a in ("approve", "rework", "refresh") if issue["status"] in ACTIONS[a]]
+        actions += [a for a in ("approve", "rework", "ask", "refresh") if issue["status"] in ACTIONS[a]]
         # A bug that didn't reproduce has findings and a question for QA, not a fix to approve
         if issue["reproduction"] == "not_reproduced" and "approve" in actions:
             actions.remove("approve")

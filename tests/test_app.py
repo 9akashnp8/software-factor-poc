@@ -9,7 +9,7 @@ from werkzeug.security import generate_password_hash
 
 import app as web
 from conftest import seed_issue
-from software_factory import store
+from software_factory import plan_questions, store
 
 
 def basic(user: str, password: str) -> dict:
@@ -101,6 +101,33 @@ def test_rework_with_csrf_token_queues_feedback(client, ws):
     client.post("/issue/issue-1/rework-plan", headers=AUTH, data={"csrf_token": token, "feedback": "Check the router"})
     issue = store.get_issue("issue-1")
     assert (issue["status"], issue["pending_feedback"]) == (store.REWORK_QUEUED, "Check the router")
+
+
+def test_asking_queues_the_question_and_shows_it_while_the_planner_answers(client, ws):
+    token = csrf_token(client)
+    client.post("/issue/issue-1/ask-question", headers=AUTH, data={"csrf_token": token, "question": "Why not fix the caller?"})
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["pending_feedback"], issue["plan_reviewed_by"]) == (store.ASK_QUEUED, "Why not fix the caller?", None)
+    assert store.events("issue-1")[-1]["actor"] == "akash"
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Why not fix the caller?" in page and "The planner is looking into it" in page
+    assert "Approve plan" not in page and "Ask a question" not in page
+
+
+def test_an_empty_question_isnt_asked(client, ws):
+    token = csrf_token(client)
+    response = client.post("/issue/issue-1/ask-question", headers=AUTH, data={"csrf_token": token, "question": "  "}, follow_redirects=True)
+    assert store.get_issue("issue-1")["status"] == store.PLAN_READY
+    assert "Write the question before asking it." in response.get_data(as_text=True)
+
+
+def test_plan_page_shows_answered_questions_beside_the_decision(client, ws):
+    plan_questions.record(ws, "Why not fix the caller?", "akash", "Because **three** callers share it.", None)
+    plan_questions.record(ws, "And the cache?", "akash", None, None)
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Why not fix the caller?" in page and "<strong>three</strong>" in page
+    assert "The planner couldn't answer this." in page
+    assert "Ask a question" in page and "Approve plan" in page and "Request rework" in page
 
 
 def test_refresh_queues_the_plan_and_hides_approve(client, ws):
