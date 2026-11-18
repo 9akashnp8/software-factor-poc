@@ -29,6 +29,8 @@ REPRODUCED_BY = {
     "replay": "By replaying the conversation against the code before the fix.",
     "browser": "In the web app, before the fix.",
     "api": "By calling the api, before the fix.",
+    "logs": "From the app's logs, before the fix.",
+    "code": "By tracing the code, before the fix.",
     "manual": "By following the steps by hand, before the fix.",
 }
 

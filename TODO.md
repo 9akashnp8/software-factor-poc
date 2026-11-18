@@ -42,6 +42,24 @@ the factory works today is in `docs/running.md` and `docs/agent-permissions.md`.
 - [ ] **Overlap warning noise.** Nearly every plan mentions
       `docs/agents/running-the-app.md`, so the warning flags every other issue. Ignore files
       that plans only read.
+- [ ] **A reproduction the worker can run again.** Today "reproduced" is the planner's
+      claim, backed by an excerpt it wrote. Add a `command` to `reproduction.json`: an
+      existing test, a script under `$SF_WORKSPACE`, or an api call, since plan mode can't
+      add tests to the repo. The worker runs it on the slot before the plan is presented
+      and expects it to fail, as `check_verification` does after the fix with `rerun_test`.
+      The implementer then starts from that command, and Refresh plan can re-run it first
+      to see whether a merge fixed the bug. A chat replay needs a check beside it (no
+      citation, routed to X), since an LLM answer doesn't pass or fail. Browser
+      reproductions keep `command: null` and show as "not re-runnable".
+- [ ] **`git bisect` for regressions,** once a reproduction can be run again. When QA
+      says it used to work, `git bisect run` with that command finds the breaking commit,
+      whose diff is often the cause and shows what the change meant to do. It can't see
+      prompt changes made in Langfuse; replaying the turn against earlier prompt versions
+      would be the equivalent there.
+- [ ] **A triage assistant (optional).** A light pass on issues in Linear's Triage state
+      that checks the metadata (a `cpcgpt-chat` issue without a conversation id only fails
+      at `gather_context` today, after it's moved to Todo) and comments a suggested kind and
+      labels. It advises only: moving to Todo stays a person's decision.
 
 ## Deferred on purpose
 

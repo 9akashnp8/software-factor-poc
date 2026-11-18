@@ -93,14 +93,25 @@
         {{ ui.icon("external") }}
         <div class="sf-banner-body"><p><strong>Waiting on QA.</strong>The question is on the Linear issue. This plan doesn't hold a plan-review place meanwhile, so new bugs keep being triaged. When QA answers, send the answer as rework.</p></div>
     </div>
-    {% elif repro and repro.status == 'not_reproduced' and 'rework' in actions %}
+    {% elif no_fix and 'rework' in actions %}
+    {% if reviewer_ask %}
+    <section aria-labelledby="reviewer-ask-heading">
+        <div class="sf-section-head"><h2 id="reviewer-ask-heading">For you</h2></div>
+        <div class="sf-panel">
+            <article class="sf-prose">{{ reviewer_ask }}</article>
+            <p class="sf-field-hint sf-reviewer-ask-hint">The planner couldn't check this itself. Run it, then send what you found as rework: the planner picks up from there.</p>
+        </div>
+    </section>
+    {% endif %}
+    {% set works = repro.status == 'works_as_designed' %}
+    {% if works or repro.qa_question %}
     <section aria-labelledby="qa-heading">
-        <div class="sf-section-head"><h2 id="qa-heading">Question for QA</h2></div>
+        <div class="sf-section-head"><h2 id="qa-heading">{% if works %}Explanation for QA{% else %}Question for QA{% endif %}</h2></div>
         <form class="sf-panel sf-qa-question" method="post" action="{{ url_for('post_qa_question', issue_id=issue.id) }}">
             {{ ui.csrf() }}
             <div class="sf-field">
-                <label class="sf-field-label" for="question">The planner couldn't reproduce the bug. Edit its question, then post it on the Linear issue.</label>
-                <div class="sf-input is-multiline"><textarea id="question" class="sf-input-control" name="question" rows="4" required>{{ repro.qa_question }}</textarea></div>
+                <label class="sf-field-label" for="question">{% if works %}The planner found the code working as designed. Edit its explanation, then post it on the Linear issue.{% else %}The planner couldn't reproduce the bug. Edit its question, then post it on the Linear issue.{% endif %}</label>
+                <div class="sf-input is-multiline"><textarea id="question" class="sf-input-control" name="question" rows="4" required>{% if works %}{{ repro.explanation }}{% else %}{{ repro.qa_question }}{% endif %}</textarea></div>
                 <p class="sf-field-hint">{% if linear_writeback %}Posted as a comment, as the factory's Linear user, mentioning whoever reported the issue, with the {{ clarification_label }} label. When QA answers, send the answer as rework.{% else %}Posting is off while SF_LINEAR_WRITEBACK=0.{% endif %}</p>
             </div>
             <div class="sf-decision-actions">
@@ -108,6 +119,7 @@
             </div>
         </form>
     </section>
+    {% endif %}
     {% endif %}
 
     {# Everything that should give you pause before deciding, in one place rather than a stack of banners #}
@@ -153,7 +165,7 @@
     {% endif %}
 
     {# What there is to read, one tab at a time. The newest evidence opens first. #}
-    {% set plan_label = "Findings" if repro and repro.status == 'not_reproduced' else "Plan" %}
+    {% set plan_label = "Findings" if no_fix else "Plan" %}
     {% set question_count = (questions | length) + (1 if open_question else 0) %}
     {% set tabs = [] %}
     {# Verification only once the implementer has recorded its checks: the planner's screenshots are reproduction #}
@@ -199,6 +211,7 @@
                 {% if repro.steps %}<dt>Steps</dt><dd><ol>{% for step in repro.steps %}<li>{{ step }}</li>{% endfor %}</ol></dd>{% endif %}
                 {% if repro.evidence %}<dt>Evidence</dt><dd><div class="sf-raw">{{ repro.evidence }}</div></dd>{% endif %}
                 {% if repro.reason %}<dt>Why not</dt><dd>{{ repro.reason }}</dd>{% endif %}
+                {% if repro.follow_ups %}<dt>Follow-ups</dt><dd><ul>{% for item in repro.follow_ups %}<li>{{ item }}</li>{% endfor %}</ul></dd>{% endif %}
             </dl>
             {% endif %}
             {{ shots("reproduction", reproduction_shots) }}
@@ -269,6 +282,9 @@
             {% if 'approve' in actions %}
             <strong>Review the plan</strong>
             <span>Approving starts implementation. Rework sends your notes back to the agent for a new plan. Asking gets you an answer and leaves the plan as it is.</span>
+            {% elif repro and repro.status == 'works_as_designed' %}
+            <strong>Works as designed</strong>
+            <span>There's no fix to approve. Post the explanation to QA, or send your own view as rework if you disagree.</span>
             {% else %}
             <strong>Not reproduced</strong>
             <span>There's no fix to approve until the bug reproduces. Send QA's answer, or your own pointers, as rework.</span>
@@ -284,6 +300,14 @@
             {% if 'approve' in actions %}
             <form class="sf-approve" method="post" action="{{ url_for('approve_plan', issue_id=issue.id) }}" data-approve>
                 {{ ui.csrf() }}
+                {% if sized %}
+                <label class="sf-size" title="Large fixes get a more capable implementer and higher caps">
+                    <span>Size</span>
+                    <select name="size">
+                        {% for size in sizes %}<option value="{{ size }}"{% if size == (issue.size or sized.size) %} selected{% endif %}>{{ size }}</option>{% endfor %}
+                    </select>
+                </label>
+                {% endif %}
                 <label class="sf-check" title="The implementer must check the fix in the web app, and the PR waits until it passes">
                     <input type="checkbox" name="browser_check" value="1"{% if issue.browser_check %} checked{% endif %}>
                     <span>Require a browser check</span>
@@ -370,11 +394,13 @@
     <aside class="sf-issue-rail" aria-label="Issue details">
         {% set spent = namespace(cost=0, priced=false) %}
         {% for run in runs %}{% if run.cost_usd is not none %}{% set spent.cost = spent.cost + run.cost_usd %}{% set spent.priced = true %}{% endif %}{% endfor %}
-        {% if repro or pr or issue.browser_check or spent.priced %}
+        {% if repro or sized or pr or issue.browser_check or spent.priced %}
         <section class="sf-panel" aria-labelledby="details-heading">
             <h2 id="details-heading" class="sf-overline sf-rail-head">Details</h2>
             <dl class="sf-details">
                 {% if repro %}{% set rkind, rlabel = repro_look %}<dt>Reproduction</dt><dd>{{ ui.status(rkind, rlabel) }}{% if repro.method %} <span class="sf-muted">by {{ repro.method }}</span>{% endif %}</dd>{% endif %}
+                {% if sized %}<dt>Kind</dt><dd>{{ kind_label }}</dd>
+                <dt>Size</dt><dd>{{ sized.size | capitalize }}{% if issue.size and issue.size != sized.size %} <span class="sf-muted">(set to {{ issue.size }} at approval)</span>{% endif %}<span class="sf-size-why">{{ sized.why }}</span></dd>{% endif %}
                 {% if issue.browser_check %}<dt>Browser check</dt><dd>required</dd>{% endif %}
                 {% if pr %}<dt>Branch</dt><dd class="sf-mono">{{ pr.branch }}</dd>{% endif %}
                 {% if spent.priced %}<dt>Spent</dt><dd class="sf-mono">{{ '$%.2f' | format(spent.cost) }} · {{ runs | length }} {{ "run" if runs | length == 1 else "runs" }}</dd>{% endif %}

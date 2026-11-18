@@ -13,7 +13,7 @@ from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from software_factory import (
-    config, dev_changes, evidence, factory_log, home, linear, metrics, plan_questions, reproduction, store,
+    assessment, config, dev_changes, evidence, factory_log, home, linear, metrics, plan_questions, reproduction, store,
 )
 from software_factory import run_transcript as transcripts
 from software_factory.environment import branch_name
@@ -146,6 +146,8 @@ def issue_detail(issue_id):
     runs = store.runs(issue_id)
     ws = store.issue_dir(issue_id)
     repro = reproduction.load(ws)
+    # Only a fix plan is sized; findings with nothing to fix keep whatever an earlier plan left
+    sized = assessment.load(ws) if repro and repro["status"] not in reproduction.NO_FIX else None
     # The implementer's checks, once it has recorded them; until then nothing counts as verification
     verified = evidence.verification(ws) is not None
     checks = evidence.table(ws, for_pr=False) if verified else None
@@ -167,6 +169,11 @@ def issue_detail(issue_id):
         flow=home.flow(issue, events),
         pr=_pull_request(issue),
         repro=repro,
+        no_fix=bool(repro) and repro["status"] in reproduction.NO_FIX,
+        reviewer_ask=render_md(repro["reviewer_ask"]) if repro and (repro.get("reviewer_ask") or "").strip() else None,
+        sized=sized,
+        kind_label=assessment.KIND_LABELS.get(sized["kind"]) if sized else None,
+        sizes=assessment.SIZES,
         verified=verified,
         verification=render_md(checks) if checks else None,
         questions=plan_questions.load(ws),
@@ -188,6 +195,7 @@ def issue_detail(issue_id):
 REPRODUCTION_LOOK = {
     reproduction.REPRODUCED: ("done", "reproduced"),
     reproduction.NOT_REPRODUCED: ("attn", "not reproduced"),
+    reproduction.WORKS_AS_DESIGNED: ("ship", "works as designed"),
     reproduction.NOT_ATTEMPTED: ("ship", "not attempted"),
 }
 
@@ -249,6 +257,8 @@ def approve_plan(issue_id: str):
         "approve",
         plan_reviewed_by=request.authorization.username,
         browser_check=int(request.form.get("browser_check") == "1"),
+        # The planner's size unless the reviewer changed it; it picks the implementer's model and caps
+        **({"size": request.form["size"]} if request.form.get("size") in assessment.SIZES else {}),
     )
 
 @app.route("/issue/<issue_id>/rework-plan", methods=["POST"])
@@ -284,29 +294,29 @@ def release_issue(issue_id: str):
 
 @app.route("/issue/<issue_id>/post-qa-question", methods=["POST"])
 def post_qa_question(issue_id: str):
-    """Post the planner's question for QA to Linear, as edited by the person who clicked."""
+    """Post the planner's question or explanation for QA to Linear, as edited by the person who clicked."""
     _issue_or_404(issue_id)
     question = request.form.get("question", "").strip()
     if not question:
-        flash("Write the question before posting it.")
+        flash("Write the comment before posting it.")
     elif not config.LINEAR_WRITEBACK:
         flash("Posting to Linear is off (SF_LINEAR_WRITEBACK=0).")
     else:
         try:
             reporter = asyncio.run(linear.comment_to_reporter(issue_id, question))
         except (linear.LinearError, httpx.HTTPError) as e:
-            flash(f"Couldn't post the question to Linear: {e}")
+            flash(f"Couldn't post the comment to Linear: {e}")
         else:
             actor = request.authorization.username
             if reporter is None:
-                flash("The Linear issue has no reporter to mention, so the question went without one.")
+                flash("The Linear issue has no reporter to mention, so the comment went without one.")
             # Off the review count, so new bugs aren't held up while QA answers. A follow-up
             # question, posted while already waiting, is only recorded.
             if not store.transition(
                 issue_id, store.AWAITING_QA, expected={store.PLAN_READY}, actor=actor, reason=metrics.QA_QUESTION
             ):
                 store.add_event(issue_id, metrics.QA_QUESTION, actor=actor)
-            flash("Question posted to Linear. When QA answers, send the answer as rework.")
+            flash("Posted to Linear. When QA answers, send the answer as rework.")
             # The question is already posted, so a missing label is reported, not fatal
             label = config.LINEAR_CLARIFICATION_LABEL
             try:

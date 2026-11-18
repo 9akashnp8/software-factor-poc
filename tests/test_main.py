@@ -33,10 +33,16 @@ def implemented(report="Root cause: x", verification=PASSED, **fields) -> Result
 REPRODUCED = {"status": "reproduced", "method": "test", "steps": ["pytest -k grade"], "evidence": "AssertionError: '.None'"}
 
 
-def write_reproduction(record=REPRODUCED, issue_id="issue-1"):
+SIZED = {"kind": "bug", "size": "small", "why": "One function in the grading module."}
+
+
+def write_reproduction(record=REPRODUCED, issue_id="issue-1", sized=SIZED):
+    """The planner's records: the reproduction and, with a fix plan, its size."""
     ws = store.issue_dir(issue_id)
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
+    if sized is not None:
+        (ws / "assessment.json").write_text(json.dumps(sized), encoding="utf-8")
 
 
 def fake_agent(monkeypatch, *, results=None, error=None, exit_plan=None, exit_plan_from=0, work=None, reproduction=REPRODUCED, hang=False):
@@ -176,6 +182,99 @@ def test_exit_plan_mode_saves_plan_and_interrupts(plan_callback, tmp_path):
     assert issue()["reproduction"] == "reproduced"
 
 
+def test_exit_plan_mode_stores_the_planners_size(plan_callback, tmp_path):
+    ws, callback = plan_callback
+    write_reproduction(sized={"kind": "missing_capability", "size": "large", "why": "A new citation path."})
+    decide(callback, "ExitPlanMode", {"plan": "# Plan"})
+    assert (issue()["status"], issue()["size"]) == (store.PLAN_READY, "large")
+
+
+def test_a_fix_plan_without_an_assessment_is_refused(plan_callback):
+    ws, callback = plan_callback
+    write_reproduction(sized=None)
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Plan"})
+    assert denied.interrupt is False and str(ws / "assessment.json") in denied.message
+    assert issue()["status"] == store.PLANNING and not (ws / "plan.md").exists()
+
+
+def test_an_assessment_naming_what_it_lacks(plan_callback):
+    ws, callback = plan_callback
+    write_reproduction(sized={"kind": "feature", "size": "huge"})
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Plan"})
+    assert "kind must be one of" in denied.message and "size must be one of" in denied.message
+    assert "why is required" in denied.message
+
+
+WORKS_AS_DESIGNED = {
+    "status": "works_as_designed",
+    "method": "logs",
+    "steps": ["queried the QA logs"],
+    "evidence": "14:02:45 recheck queued; 14:07:54 QA opens the Policy",
+    "explanation": "The re-check ran before you opened the Policy, so 0 is correct.",
+    "follow_ups": ["A manual re-run is recorded as a law adoption"],
+}
+
+
+def test_works_as_designed_needs_no_assessment_and_cant_be_approved(plan_callback):
+    ws, callback = plan_callback
+    write_reproduction(WORKS_AS_DESIGNED, sized=None)
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Findings"})
+    assert denied.interrupt is True
+    assert (issue()["status"], issue()["reproduction"], issue()["size"]) == (store.PLAN_READY, "works_as_designed", None)
+    assert "approve" not in store.allowed_actions(issue())
+
+
+def test_findings_ignore_an_assessment_left_by_an_earlier_plan(plan_callback):
+    ws, callback = plan_callback
+    store.set_fields("issue-1", size="large")
+    write_reproduction(WORKS_AS_DESIGNED, sized=SIZED)
+    decide(callback, "ExitPlanMode", {"plan": "# Findings"})
+    assert issue()["size"] is None
+
+
+def test_works_as_designed_needs_an_explanation(plan_callback):
+    ws, callback = plan_callback
+    write_reproduction({**WORKS_AS_DESIGNED, "explanation": " "}, sized=None)
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Findings"})
+    assert "explanation is required" in denied.message
+
+
+def test_not_reproduced_can_ask_the_reviewer_instead_of_qa(plan_callback):
+    ws, callback = plan_callback
+    record = {"status": "not_reproduced", "method": "code", "steps": ["traced the re-check"], "evidence": "23 passed",
+              "reviewer_ask": "Run `SELECT trigger FROM check_run` on QA's database."}
+    write_reproduction(record, sized=None)
+    assert decide(callback, "ExitPlanMode", {"plan": "# Findings"}).interrupt is True
+    assert issue()["reproduction"] == "not_reproduced"
+
+
+def test_not_reproduced_needs_a_question_for_someone(plan_callback):
+    ws, callback = plan_callback
+    record = {"status": "not_reproduced", "method": "code", "steps": ["traced it"], "evidence": "23 passed"}
+    write_reproduction(record, sized=None)
+    denied = decide(callback, "ExitPlanMode", {"plan": "# Findings"})
+    assert "qa_question or reviewer_ask is required" in denied.message
+
+
+def test_plan_callback_allows_writing_the_assessment(plan_callback):
+    ws, callback = plan_callback
+    assert isinstance(decide(callback, "Write", {"file_path": str(ws / "assessment.json")}), PermissionResultAllow)
+
+
+def test_answering_a_question_cant_rewrite_the_assessment():
+    ws = seed_issue(store.ASKING)
+    callback = main.plan_phase_can_use_tool("issue-1", ws, answering=True)
+    denied = decide(callback, "Write", {"file_path": str(ws / "assessment.json")})
+    assert isinstance(denied, PermissionResultDeny) and denied.message == main.ANSWER_ONLY
+
+
+def test_the_system_prompt_carries_the_assessment_shape():
+    assert "{assessment_shape}" not in main.SYSTEM_PROMPT
+    assert '"size": "small" | "medium" | "large"' in main.SYSTEM_PROMPT
+    # The Langfuse template syntax it quotes isn't mangled by filling in the shape
+    assert "({{variable}})" in main.SYSTEM_PROMPT
+
+
 def test_exit_plan_mode_without_a_reproduction_record_asks_for_one(plan_callback):
     ws, callback = plan_callback
     denied = decide(callback, "ExitPlanMode", {"plan": "# Plan"})
@@ -310,6 +409,25 @@ def pr_calls(monkeypatch, tmp_path: Path) -> list:
 
 def implement():
     anyio.run(main.implement_and_review, "issue-1", True)
+
+
+@pytest.mark.parametrize(
+    "size, model, limits",
+    [(None, "IMPLEMENT_MODEL", main.LIMITS), ("medium", "IMPLEMENT_MODEL", main.LIMITS), ("large", "IMPLEMENT_MODEL_LARGE", main.LARGE_LIMITS)],
+)
+def test_the_implementer_is_chosen_by_size(monkeypatch, pr_calls, size, model, limits):
+    seed_issue(store.IMPLEMENTING, size=size)
+    sessions = fake_agent(monkeypatch, results=[result("error_max_turns", is_error=True, text="")])
+    implement()
+    options = sessions[0].options
+    assert options.model == getattr(config, model)
+    assert (options.max_turns, options.max_budget_usd) == (limits["implement"]["max_turns"], limits["implement"]["max_budget_usd"])
+
+
+def test_a_large_fix_doesnt_raise_the_planners_caps():
+    seed_issue(store.PLANNING, size="large")
+    assert main.run_limits("issue-1", "plan") == main.LIMITS["plan"]
+    assert main.run_limits("issue-1", "implement") == main.LARGE_LIMITS["implement"]
 
 
 def test_implementation_hitting_turn_limit_needs_attention_and_skips_push(monkeypatch, pr_calls):

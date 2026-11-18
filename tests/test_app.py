@@ -268,6 +268,85 @@ def test_a_bug_that_did_not_reproduce_cant_be_approved(client, ws):
     assert store.get_issue("issue-1")["status"] == store.PLAN_READY
 
 
+WORKS_AS_DESIGNED = {
+    "status": "works_as_designed",
+    "method": "logs",
+    "steps": ["Queried QA's logs around the report"],
+    "evidence": "14:02:45 recheck queued; 14:07:54 QA opens the Policy",
+    "explanation": "The re-check ran at 14:02, before you opened the Policy, so 0 is correct.",
+    "follow_ups": ["A manual re-run is recorded as a law adoption"],
+}
+
+
+def test_works_as_designed_offers_the_explanation_not_approval(client, ws):
+    (ws / "reproduction.json").write_text(json.dumps(WORKS_AS_DESIGNED), encoding="utf-8")
+    store.set_fields("issue-1", reproduction="works_as_designed")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Approve plan" not in page and "Request rework" in page
+    assert "works as designed" in page and "by logs" in page and "Findings" in page
+    assert "Explanation for QA" in page and "The re-check ran at 14:02" in page
+    assert "Follow-ups" in page and "recorded as a law adoption" in page
+    assert "Question for QA" not in page and "For you" not in page
+
+
+def test_a_question_for_the_reviewer_shows_without_one_for_qa(client, ws):
+    record = {**NOT_REPRODUCED, "reviewer_ask": "Run `SELECT trigger FROM check_run` on QA's database."}
+    del record["qa_question"]
+    (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
+    store.set_fields("issue-1", reproduction="not_reproduced")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "For you" in page and "<code>SELECT trigger FROM check_run</code>" in page
+    assert "send what you found as rework" in page
+    assert "Question for QA" not in page and "Approve plan" not in page
+
+
+def test_a_question_for_both_shows_both(client, ws):
+    record = {**NOT_REPRODUCED, "reviewer_ask": "Check the worker's POLICY_LEGAL_CHECKER."}
+    (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
+    store.set_fields("issue-1", reproduction="not_reproduced")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "For you" in page and "Question for QA" in page
+
+
+SIZED = {"kind": "missing_capability", "size": "large", "why": "Attachments have no citation path yet."}
+
+
+def sized_plan(ws: Path):
+    record = {"status": "reproduced", "method": "test", "steps": ["pytest -k cite"], "evidence": "no citations"}
+    (ws / "reproduction.json").write_text(json.dumps(record), encoding="utf-8")
+    (ws / "assessment.json").write_text(json.dumps(SIZED), encoding="utf-8")
+    store.set_fields("issue-1", reproduction="reproduced", size="large")
+
+
+def test_a_fix_plan_shows_its_size_with_a_picker(client, ws):
+    sized_plan(ws)
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Missing capability" in page and "Attachments have no citation path yet." in page
+    assert '<select name="size">' in page and '<option value="large" selected>' in page
+
+
+def test_approving_with_another_size_keeps_it(client, ws):
+    sized_plan(ws)
+    token = csrf_token(client)
+    client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token, "size": "medium"})
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["size"]) == (store.IMPLEMENT_QUEUED, "medium")
+
+
+def test_approving_with_a_made_up_size_keeps_the_planners(client, ws):
+    sized_plan(ws)
+    token = csrf_token(client)
+    client.post("/issue/issue-1/approve", headers=AUTH, data={"csrf_token": token, "size": "huge"})
+    assert store.get_issue("issue-1")["size"] == "large"
+
+
+def test_findings_dont_show_an_earlier_plans_size(client, ws):
+    sized_plan(ws)
+    not_reproduced(ws)
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert "Missing capability" not in page and '<select name="size">' not in page
+
+
 def test_chat_bug_without_a_replay_is_flagged(client, ws):
     (ws / "conversation.json").write_text("{}", encoding="utf-8")
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
@@ -293,7 +372,7 @@ def test_posting_the_qa_question_comments_on_linear(client, ws, monkeypatch):
         "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": token, "question": "Which day?"}, follow_redirects=True
     )
     assert posted == [("issue-1", "Which day?"), ("issue-1", "label Need Clarification")]
-    assert "Question posted to Linear" in response.get_data(as_text=True)
+    assert "Posted to Linear" in response.get_data(as_text=True)
     details = [(e["detail"], e["actor"]) for e in store.events("issue-1")[-2:]]
     assert details == [("QA question posted to Linear", "akash"), ("Linear label Need Clarification added", "akash")]
     # Waiting on QA frees its plan-review place
@@ -342,7 +421,7 @@ def test_an_issue_without_a_reporter_is_posted_without_a_mention(client, ws, mon
         "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "Which day?"}, follow_redirects=True
     )
     page = response.get_data(as_text=True)
-    assert "Question posted to Linear" in page and "no reporter to mention" in page
+    assert "Posted to Linear" in page and "no reporter to mention" in page
 
 
 def test_a_missing_label_is_reported_and_the_question_still_counts(client, ws, monkeypatch):
@@ -361,7 +440,7 @@ def test_a_missing_label_is_reported_and_the_question_still_counts(client, ws, m
         "/issue/issue-1/post-qa-question", headers=AUTH, data={"csrf_token": csrf_token(client), "question": "Which day?"}, follow_redirects=True
     )
     page = response.get_data(as_text=True)
-    assert "Question posted to Linear" in page and "Couldn&#39;t add the &#39;Need Clarification&#39; label" in page
+    assert "Posted to Linear" in page and "Couldn&#39;t add the &#39;Need Clarification&#39; label" in page
     assert store.get_issue("issue-1")["status"] == store.AWAITING_QA
     assert "Couldn't add the Linear label" in store.events("issue-1")[-1]["detail"]
 

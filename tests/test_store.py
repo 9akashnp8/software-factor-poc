@@ -240,3 +240,16 @@ def test_publish_is_claimed_before_new_triage_and_requeued_as_publish():
     # Cut off mid-push: it goes back to publishing, not to implementing again
     assert store.requeue("issue-1", "worker restarted")
     assert store.get_issue("issue-1")["status"] == store.PUBLISH_QUEUED
+
+
+def test_starting_over_forgets_the_fixs_size():
+    seed_issue(store.PLAN_READY, reproduction="reproduced", size="large")
+    assert store.restart("issue-1", "akash")
+    issue = store.get_issue("issue-1")
+    assert (issue["status"], issue["reproduction"], issue["size"]) == (store.QUEUED, None, None)
+
+
+def test_a_reopened_issue_forgets_the_fixs_size():
+    seed_issue(store.DEPLOYED, reproduction="reproduced", size="large")
+    assert store.reopen("issue-1") is not None
+    assert store.get_issue("issue-1")["size"] is None

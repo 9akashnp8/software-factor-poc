@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS issues (
     deploy_build_seen INTEGER,
     plan_base TEXT,
     reproduction TEXT,
+    size TEXT,
     browser_check INTEGER NOT NULL DEFAULT 0,
     review_threads TEXT,
     review_rounds INTEGER NOT NULL DEFAULT 0,
@@ -219,6 +220,8 @@ _ADDED_COLUMNS = {
         "plan_base": "TEXT",
         # The planner's reproduction status (reproduction.STATUSES), for the page and metrics
         "reproduction": "TEXT",
+        # The fix's size (assessment.SIZES): the planner's, or the reviewer's at approval
+        "size": "TEXT",
         # Set at approval: the implementer must check the fix in the browser
         "browser_check": "INTEGER NOT NULL DEFAULT 0",
         # The reviewer comments a /factory fix sent to the agent (JSON), while that update runs
@@ -234,7 +237,7 @@ ISSUE_FIELDS = {
     "identifier", "title", "url", "session_id", "pr_url", "pr_id",
     "needs_attention_reason", "plan_reviewed_by", "pending_feedback",
     "pr_conflict_key", "pr_build_id", "merged_at", "merge_commit", "deploy_build_seen",
-    "plan_base", "reproduction", "browser_check", "review_threads", "pr_command_at",
+    "plan_base", "reproduction", "size", "browser_check", "review_threads", "pr_command_at",
 }
 
 
@@ -540,7 +543,7 @@ def reopen(issue_id: str) -> sqlite3.Row | None:
                    pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
                    review_threads = NULL, review_rounds = 0, pr_command_at = NULL,
                    pending_feedback = NULL, needs_attention_reason = NULL, slot = NULL, reproduction = NULL,
-                   browser_check = 0, updated_at = ?
+                   size = NULL, browser_check = 0, updated_at = ?
                WHERE id = ?""",
             (QUEUED, _now(), issue_id),
         )
@@ -581,7 +584,7 @@ def restart(issue_id: str, actor: str) -> bool:
                    pr_conflict_key = NULL, pr_build_id = NULL, update_rounds = 0, attempts = 0,
                    review_threads = NULL, review_rounds = 0, pr_command_at = NULL,
                    pending_feedback = NULL, needs_attention_reason = NULL, plan_reviewed_by = NULL,
-                   slot = NULL, reproduction = NULL, browser_check = 0, updated_at = ?
+                   slot = NULL, reproduction = NULL, size = NULL, browser_check = 0, updated_at = ?
                WHERE id = ?""",
             (QUEUED, _now(), issue_id),
         )
@@ -759,8 +762,9 @@ def allowed_actions(issue: sqlite3.Row) -> list[str]:
     actions = []
     if has_plan:
         actions += [a for a in ("approve", "rework", "ask", "refresh") if issue["status"] in ACTIONS[a]]
-        # A bug that didn't reproduce has findings and a question for QA, not a fix to approve
-        if issue["reproduction"] == "not_reproduced" and "approve" in actions:
+        # Findings that didn't reproduce the bug, or found the code working as designed,
+        # have nothing to approve
+        if issue["reproduction"] in ("not_reproduced", "works_as_designed") and "approve" in actions:
             actions.remove("approve")
     elif issue["status"] in ACTIONS["retry"]:
         actions.append("retry")
