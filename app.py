@@ -146,7 +146,9 @@ def issue_detail(issue_id):
     runs = store.runs(issue_id)
     ws = store.issue_dir(issue_id)
     repro = reproduction.load(ws)
-    verified = evidence.table(ws, for_pr=False)
+    # The implementer's checks, once it has recorded them; until then nothing counts as verification
+    verified = evidence.verification(ws) is not None
+    checks = evidence.table(ws, for_pr=False) if verified else None
 
     return render_template(
         "issue_detail.html",
@@ -165,12 +167,14 @@ def issue_detail(issue_id):
         flow=home.flow(issue, events),
         pr=_pull_request(issue),
         repro=repro,
-        verification=render_md(verified) if verified else None,
+        verified=verified,
+        verification=render_md(checks) if checks else None,
         questions=plan_questions.load(ws),
         # The question the planner is answering now, shown until its answer is recorded
         open_question={"question": issue["pending_feedback"], "asked_by": plan_questions.asked_by(events)}
         if issue["status"] in (store.ASK_QUEUED, store.ASKING) else None,
-        screenshots=evidence.screenshots(ws),
+        verification_shots=evidence.screenshots(ws, evidence.VERIFICATION) if verified else [],
+        reproduction_shots=evidence.screenshots(ws, evidence.REPRODUCTION),
         repro_look=REPRODUCTION_LOOK.get(repro["status"]) if repro else None,
         # A chat bug can be replayed, so anything else is weaker evidence
         replay_missing=plan is not None and (ws / "conversation.json").exists()
@@ -341,8 +345,8 @@ def run_transcript(issue_id: str, run_id: int):
     ws = store.issue_dir(issue_id)
     events = store.events(issue_id)
     transcript = transcripts.parse(path, ws)
-    screenshots = evidence.screenshots(ws)
-    images = {c.id: name for c in transcript["calls"] if (name := transcripts.evidence_image(c, ws, screenshots))}
+    shots = {stage: evidence.screenshots(ws, stage) for stage in evidence.STAGES}
+    images = {c.id: found for c in transcript["calls"] if (found := transcripts.evidence_image(c, ws, shots))}
     runs = store.runs(issue_id)
     return render_template(
         "run_transcript.html",
@@ -372,11 +376,13 @@ def run_transcript_raw(issue_id: str, run_id: int):
     return send_from_directory(path.parent, path.name, mimetype="text/plain")
 
 
-@app.route("/issue/<issue_id>/evidence/<name>")
-def evidence_file(issue_id: str, name: str):
-    """A screenshot the agent saved while reproducing or checking the bug."""
+@app.route("/issue/<issue_id>/evidence/<stage>/<name>")
+def evidence_file(issue_id: str, stage: str, name: str):
+    """A screenshot an agent saved while reproducing the bug (stage "reproduction") or
+    checking the fix ("verification")."""
     _issue_or_404(issue_id)
-    # Only names the folder lists, so nothing outside it can be asked for
-    if name not in evidence.screenshots(store.issue_dir(issue_id)):
+    # Only files the evidence module lists for that stage, so nothing else can be asked for
+    path = evidence.screenshot_path(store.issue_dir(issue_id), stage, name)
+    if path is None:
         abort(404)
-    return send_from_directory(store.issue_dir(issue_id) / evidence.EVIDENCE_DIR, name)
+    return send_from_directory(path.parent, path.name)

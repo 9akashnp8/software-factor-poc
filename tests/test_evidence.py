@@ -1,5 +1,7 @@
 import importlib
 import json
+import os
+from datetime import datetime
 from pathlib import Path
 
 from conftest import seed_issue
@@ -77,14 +79,71 @@ def test_long_cells_are_cut_to_one_line(tmp_path):
     assert evidence.table(tmp_path).endswith("Verification: **failed**.")
 
 
-def test_screenshots_are_listed_and_counted(tmp_path):
-    write(tmp_path, "verification.json", {"status": "passed", "browser": {"done": True, "passed": True}})
-    (tmp_path / "evidence").mkdir()
-    (tmp_path / "evidence" / "page.png").write_bytes(b"png")
-    (tmp_path / "evidence" / "trace.zip").write_bytes(b"zip")
-    assert evidence.screenshots(tmp_path) == ["page.png"]
-    assert "1 screenshot on the plan page." in evidence.table(tmp_path)
-    assert "screenshot" not in evidence.table(tmp_path, for_pr=False)
+def shot(ws: Path, folder: str, name: str, at: float | None = None) -> Path:
+    """A screenshot in evidence/<folder>/ ("" for the flat folder of older workspaces)."""
+    path = ws / "evidence" / folder / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"png")
+    if at is not None:
+        os.utime(path, (at, at))
+    return path
+
+
+VERIFIED = {"status": "passed", "browser": {"done": True, "passed": True}}
+
+
+def test_screenshots_are_kept_by_the_stage_that_took_them(tmp_path):
+    write(tmp_path, "verification.json", VERIFIED)
+    shot(tmp_path, "reproduction", "before.png")
+    shot(tmp_path, "verification", "after.png")
+    (tmp_path / "evidence" / "verification" / "trace.zip").write_bytes(b"zip")
+    assert evidence.screenshots(tmp_path, evidence.REPRODUCTION) == ["before.png"]
+    assert evidence.screenshots(tmp_path, evidence.VERIFICATION) == ["after.png"]
+    assert "Screenshots on the plan page: 1 from reproducing the bug, 1 from checking the fix." in evidence.table(tmp_path)
+    assert "Screenshots" not in evidence.table(tmp_path, for_pr=False)
+
+
+def test_the_pr_never_counts_the_planners_screenshots_as_checking_the_fix(tmp_path):
+    write(tmp_path, "verification.json", VERIFIED)
+    shot(tmp_path, "reproduction", "a.png")
+    shot(tmp_path, "reproduction", "b.png")
+    assert evidence.screenshots(tmp_path, evidence.VERIFICATION) == []
+    assert "Screenshots on the plan page: 2 from reproducing the bug, none from checking the fix." in evidence.table(tmp_path)
+
+
+def test_a_flat_folder_from_before_the_split_is_reproduction_until_something_is_verified():
+    ws = seed_issue(store.PLAN_READY)
+    shot(ws, "", "repro.png")
+    assert evidence.screenshots(ws, evidence.REPRODUCTION) == ["repro.png"]
+    assert evidence.screenshots(ws, evidence.VERIFICATION) == []
+
+
+def test_a_flat_folder_splits_at_the_plans_approval():
+    ws = seed_issue(store.PLAN_READY)
+    store.transition("issue-1", store.IMPLEMENT_QUEUED)
+    approved = datetime.fromisoformat(store.events("issue-1")[-1]["at"]).timestamp()
+    shot(ws, "", "repro.png", at=approved - 600)
+    shot(ws, "", "after.png", at=approved + 600)
+    write(ws, "verification.json", VERIFIED)
+    assert evidence.screenshots(ws, evidence.REPRODUCTION) == ["repro.png"]
+    assert evidence.screenshots(ws, evidence.VERIFICATION) == ["after.png"]
+
+
+def test_a_flat_folder_with_no_approval_to_split_at_counts_nothing_as_verification(tmp_path):
+    write(tmp_path, "verification.json", VERIFIED)
+    shot(tmp_path, "", "shot.png")
+    assert evidence.screenshots(tmp_path, evidence.VERIFICATION) == []
+    assert evidence.screenshots(tmp_path, evidence.REPRODUCTION) == ["shot.png"]
+
+
+def test_screenshot_path_returns_only_listed_files(tmp_path):
+    listed = shot(tmp_path, "reproduction", "a.png")
+    (tmp_path / "secret.png").write_bytes(b"png")
+    assert evidence.screenshot_path(tmp_path, evidence.REPRODUCTION, "a.png") == listed
+    assert evidence.screenshot_path(tmp_path, evidence.VERIFICATION, "a.png") is None
+    assert evidence.screenshot_path(tmp_path, evidence.REPRODUCTION, "../../secret.png") is None
+    assert evidence.screenshot_path(tmp_path, "..", "secret.png") is None
+    assert evidence.screenshot_path(tmp_path, "", "a.png") is None
 
 
 def test_reproduced_sentence_for_qa(tmp_path):

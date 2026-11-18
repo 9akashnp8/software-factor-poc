@@ -420,6 +420,7 @@ a:focus-visible, summary:focus-visible { border-radius: var(--radius-sm); }
 .sf-tabs-link { margin-left: auto; align-self: center; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; text-decoration: none; }
 .sf-tabs-link:hover { text-decoration: underline; }
 .sf-tabpanel > .sf-prose { padding: 20px var(--space-6) var(--space-6); }
+.sf-tabpanel > .sf-shots { padding: 0 var(--space-6) var(--space-6); }
 .sf-tabpanel > .sf-prose + .sf-shots { margin-top: calc(-1 * var(--space-3)); }
 .sf-tabpanel > .sf-shots:first-child { padding-top: var(--space-4); }
 .sf-tabpanel > .sf-facts { padding: var(--space-4) var(--space-6) 20px; }

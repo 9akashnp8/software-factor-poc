@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from software_factory import store
+from software_factory import evidence, store
 
 PLANNING_PHASES = frozenset({"plan", "rework", "refresh"})
 # The CLI reports this for a planning run the worker stopped by refusing ExitPlanMode
@@ -558,13 +558,19 @@ def outcome(run, events) -> tuple[str, str]:
     return "done", (run["subtype"] or "finished").replace("_", " ")
 
 
-def evidence_image(call: Call, issue_dir: Path, screenshots: list[str]) -> str | None:
-    """The evidence screenshot a Read call looked at, if it was one the page can show."""
+def evidence_image(call: Call, issue_dir: Path, shots: dict[str, list[str]]) -> tuple[str, str] | None:
+    """The evidence screenshot a Read call looked at, as (stage, name), if it was one the page
+    can show. shots is each stage's screenshots, as evidence.screenshots lists them."""
     if call.kind != "read" or not call.path:
         return None
     name = os.path.basename(call.path.replace("\\", "/"))
     try:
-        inside = Path(call.path).resolve().parent == (issue_dir / "evidence").resolve()
+        folder = Path(call.path).resolve().parent
+        flat = (issue_dir / evidence.EVIDENCE_DIR).resolve()
+        for stage, names in shots.items():
+            # A stage's own folder, or the one flat folder of workspaces from before the split
+            if folder in (evidence.stage_dir(issue_dir, stage).resolve(), flat) and name in names:
+                return stage, name
     except OSError:
         return None
-    return name if inside and name in screenshots else None
+    return None

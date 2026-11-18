@@ -9,7 +9,7 @@ import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, RateLimitEvent, RateLimitInfo, ResultMessage
 
 from conftest import git, seed_issue
-from software_factory import config, plan_questions, store
+from software_factory import config, evidence, plan_questions, store
 
 main = importlib.import_module("software_factory.main")
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -676,10 +676,20 @@ def test_agents_get_a_headless_browser_saving_to_the_workspace(monkeypatch, pr_c
     implement()
     server = sessions[0].options.mcp_servers["playwright"]
     assert config.PLAYWRIGHT_MCP in server["args"] and "--headless" in server["args"]
-    assert str(ws / "evidence") in server["args"]
+    # The implementer's screenshots are verification, apart from the planner's
+    assert str(ws / "evidence" / "verification") in server["args"]
     monkeypatch.setattr(config, "PLAYWRIGHT_MCP", "")
     monkeypatch.setattr(config, "LOKI_URL", "")
-    assert main.mcp_servers(ws) == {}
+    assert main.mcp_servers(ws, evidence.VERIFICATION) == {}
+
+
+def test_the_planners_browser_saves_to_the_reproduction_folder(tmp_path):
+    ws = seed_issue(store.PLANNING)
+    options = main.planning_options(issue(), tmp_path, ws)
+    args = options.mcp_servers["playwright"]["args"]
+    assert str(ws / "evidence" / "reproduction") in args
+    assert str(ws / "evidence" / "verification") not in args
+    assert "evidence/reproduction/" in main.SYSTEM_PROMPT
 
 
 def test_planner_may_use_the_browser(plan_callback):

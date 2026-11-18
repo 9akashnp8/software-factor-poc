@@ -4,6 +4,17 @@
 {% block title %}{{ issue.identifier }}{% endblock %}
 {% block page_class %}is-issue{% endblock %}
 
+{# A stage's screenshots, each linking to the full image #}
+{% macro shots(stage, names) -%}
+{% if names %}
+<div class="sf-shots">
+    {% for name in names %}
+    <a href="{{ url_for('evidence_file', issue_id=issue.id, stage=stage, name=name) }}" rel="noopener noreferrer"><img src="{{ url_for('evidence_file', issue_id=issue.id, stage=stage, name=name) }}" alt="Screenshot {{ name }}" loading="lazy"></a>
+    {% endfor %}
+</div>
+{% endif %}
+{%- endmacro %}
+
 {% block content %}
     {% set kind, label = look(issue.status) %}
     <a class="sf-back" href="{{ url_for('issue_home') }}">{{ ui.icon("arrow-right", 14) }}Issues</a>
@@ -145,11 +156,12 @@
     {% set plan_label = "Findings" if repro and repro.status == 'not_reproduced' else "Plan" %}
     {% set question_count = (questions | length) + (1 if open_question else 0) %}
     {% set tabs = [] %}
-    {% if verification or screenshots %}{% set _ = tabs.append(("verification", "Verification", "")) %}{% endif %}
+    {# Verification only once the implementer has recorded its checks: the planner's screenshots are reproduction #}
+    {% if verified %}{% set _ = tabs.append(("verification", "Verification", "")) %}{% endif %}
     {% set _ = tabs.append(("plan", plan_label, "")) %}
-    {% if repro %}{% set _ = tabs.append(("reproduction", "Reproduction", "")) %}{% endif %}
+    {% if repro or reproduction_shots %}{% set _ = tabs.append(("reproduction", "Reproduction", "")) %}{% endif %}
     {% if question_count %}{% set _ = tabs.append(("questions", "Questions", question_count)) %}{% endif %}
-    {% set first = "verification" if (verification or screenshots) else ("questions" if open_question else "plan") %}
+    {% set first = "verification" if verified else ("questions" if open_question else "plan") %}
     <div class="sf-panel sf-reading" data-tabs>
         <div class="sf-tabs" role="tablist" aria-label="Issue content">
             {% for id, name, count in tabs %}
@@ -160,15 +172,12 @@
             <a class="sf-tabs-link" href="{{ url_for('issue_context', issue_id=issue.id) }}">Issue context{{ ui.icon("arrow-right", 14) }}</a>
         </div>
 
-        {% if verification or screenshots %}
+        {% if verified %}
         <div class="sf-tabpanel" role="tabpanel" id="panel-verification" aria-labelledby="tab-verification"{% if first != "verification" %} hidden{% endif %}>
             {% if verification %}<article class="sf-prose">{{ verification }}</article>{% endif %}
-            {% if screenshots %}
-            <div class="sf-shots">
-                {% for name in screenshots %}
-                <a href="{{ url_for('evidence_file', issue_id=issue.id, name=name) }}" rel="noopener noreferrer"><img src="{{ url_for('evidence_file', issue_id=issue.id, name=name) }}" alt="Screenshot {{ name }}" loading="lazy"></a>
-                {% endfor %}
-            </div>
+            {{ shots("verification", verification_shots) }}
+            {% if not verification and not verification_shots %}
+            <div class="sf-empty is-compact sf-empty-plan"><p class="sf-empty-body">The implementer recorded no checks.</p></div>
             {% endif %}
         </div>
         {% endif %}
@@ -181,15 +190,18 @@
             {% endif %}
         </div>
 
-        {% if repro %}
-        {% set rkind, rlabel = repro_look %}
+        {% if repro or reproduction_shots %}
         <div class="sf-tabpanel" role="tabpanel" id="panel-reproduction" aria-labelledby="tab-reproduction" hidden>
+            {% if repro %}
+            {% set rkind, rlabel = repro_look %}
             <dl class="sf-pr-body sf-facts">
                 <dt>Outcome</dt><dd>{{ ui.status(rkind, rlabel, tinted=true) }}{% if repro.method %} <span class="sf-muted">by {{ repro.method }}</span>{% endif %}</dd>
                 {% if repro.steps %}<dt>Steps</dt><dd><ol>{% for step in repro.steps %}<li>{{ step }}</li>{% endfor %}</ol></dd>{% endif %}
                 {% if repro.evidence %}<dt>Evidence</dt><dd><div class="sf-raw">{{ repro.evidence }}</div></dd>{% endif %}
                 {% if repro.reason %}<dt>Why not</dt><dd>{{ repro.reason }}</dd>{% endif %}
             </dl>
+            {% endif %}
+            {{ shots("reproduction", reproduction_shots) }}
         </div>
         {% endif %}
 
