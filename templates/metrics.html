@@ -60,6 +60,7 @@
             <dl class="sf-pr-body sf-facts">
                 <dt>Reproduced</dt><dd class="sf-mono">{{ m.reproduction.get('reproduced', 0) }}</dd>
                 <dt>Not reproduced</dt><dd class="sf-mono">{{ m.reproduction.get('not_reproduced', 0) }} <span class="sf-muted">· {{ m.qa_questions }} questions posted to QA</span></dd>
+                <dt>Works as designed</dt><dd class="sf-mono">{{ m.reproduction.get('works_as_designed', 0) }}</dd>
                 <dt>Not attempted</dt><dd class="sf-mono">{{ m.reproduction.get('not_attempted', 0) }}</dd>
             </dl>
         </div>

@@ -48,22 +48,52 @@ and to In Review once a deploy ships the fix, with a comment for QA (below).
 
 The planner reproduces the bug on its worktree, which is the latest `dev`, before it plans
 a fix: a chat answer by replaying the conversation (below), anything else with a failing
-test, the web app in a headless browser, or a call to the api. It records the outcome in
-`reproduction.json` in the issue's workspace: `reproduced`, `not_reproduced` or
-`not_attempted`, with the method, steps, evidence and, when it couldn't try, why. The plan
-can't be presented until that file is valid.
+test, the web app in a headless browser, or a call to the api; a diagnosis from the app's
+logs or from reading the code is recorded as method `logs` or `code`. It records the outcome
+in `reproduction.json` in the issue's workspace, with the method, steps and evidence:
+
+- `reproduced`: it made the bug happen.
+- `not_reproduced`: it couldn't make what QA saw happen.
+- `works_as_designed`: what QA saw is real, and it's what the code is meant to do.
+- `not_attempted`: it couldn't try, and says why.
+
+The plan can't be presented until that file is valid. Before concluding `not_reproduced` or
+`works_as_designed`, the planner is told to rule out with evidence the cause QA's report
+implies, and to read the code next to the path it traced for anything that would mislead
+what QA sees. Anything real it finds goes in `follow_ups`, which the page lists.
 
 The plan page shows it in a Reproduction section. A chat bug that wasn't reproduced by a
 replay gets a "Not replayed" warning.
 
-A bug that **didn't reproduce** gets findings instead of a fix plan, and a draft question
-for QA. Approve is hidden. Edit the question and **Post to Linear** comments on the issue,
+Both outcomes with nothing to fix get findings instead of a fix plan, and Approve is hidden:
+
+- **Didn't reproduce.** The planner asks QA for what only they know (`qa_question`), asks
+  you for what a developer can check that it couldn't (`reviewer_ask`: a query on QA's
+  database, a service it couldn't reach, with the exact commands), or both. Your part shows
+  in a **For you** panel: run it, and send what you found as rework.
+- **Works as designed.** The planner writes an explanation for QA instead of a question.
+
+Edit the question or the explanation and **Post to Linear** comments on the issue,
 mentioning whoever reported it so Linear notifies them (nothing is posted on its own), and
 adds the `Need Clarification` label (`SF_LINEAR_CLARIFICATION_LABEL`; a team label of that
 name wins over a workspace one).
 Posting moves the issue to *awaiting QA*, which doesn't count toward
 `SF_MAX_PLANS_IN_REVIEW`, so new bugs keep being triaged while QA answers. When QA answers,
-send the answer as rework: the planner tries again and updates `reproduction.json`.
+send the answer as rework: the planner tries again and updates `reproduction.json`. If QA
+agrees the code works as designed, release the issue.
+
+## Sizing the fix
+
+With a fix plan, the planner writes `assessment.json`: the kind of work (`bug`,
+`missing_capability` or `change_request`), its size (`small`, `medium` or `large`) and one
+sentence on why. ExitPlanMode refuses a fix plan without it. The plan page shows it in a
+Size section, and the approve button has a size picker, so you can change it before
+approving.
+
+A fix sized `large` is implemented by `SF_IMPLEMENT_MODEL_LARGE` (`opus`) instead of
+`SF_IMPLEMENT_MODEL` (`sonnet`), with higher caps for the implementer's runs (`LARGE_LIMITS`
+in `main.py`: 300 turns and $25 for implement and fix, 200 turns and $15 for PR updates).
+Planning caps don't change with the size.
 
 ### Replaying a chat turn
 

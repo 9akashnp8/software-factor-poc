@@ -1,8 +1,9 @@
 """What the planner found when it tried to reproduce the bug, in the workspace's reproduction.json.
 
 The planner writes the file before it presents its plan; ExitPlanMode is refused until the
-file is valid. A bug that didn't reproduce gets findings and a question for QA instead of
-a fix plan, and can't be approved.
+file is valid. A bug that didn't reproduce, or that turned out to be the code working as
+designed, gets findings instead of a fix plan, and can't be approved: the reviewer posts the
+question or the explanation to QA, or answers the planner's question for them as rework.
 """
 
 import json
@@ -12,18 +13,26 @@ FILE = "reproduction.json"
 
 REPRODUCED = "reproduced"
 NOT_REPRODUCED = "not_reproduced"
+# What QA saw is real, and it's what the code is meant to do
+WORKS_AS_DESIGNED = "works_as_designed"
 NOT_ATTEMPTED = "not_attempted"
-STATUSES = (REPRODUCED, NOT_REPRODUCED, NOT_ATTEMPTED)
-METHODS = ("test", "replay", "browser", "api", "manual")
+STATUSES = (REPRODUCED, NOT_REPRODUCED, WORKS_AS_DESIGNED, NOT_ATTEMPTED)
+# The outcomes with findings instead of a fix to approve
+NO_FIX = frozenset({NOT_REPRODUCED, WORKS_AS_DESIGNED})
+# logs and code: a diagnosis from the app's logs, or from reading the code, with nothing run
+METHODS = ("test", "replay", "browser", "api", "logs", "code", "manual")
 
 # What the planner is told to write, quoted in its prompt and in refusals
 SHAPE = """{
-  "status": "reproduced" | "not_reproduced" | "not_attempted",
-  "method": "test" | "replay" | "browser" | "api" | "manual",
+  "status": "reproduced" | "not_reproduced" | "works_as_designed" | "not_attempted",
+  "method": "test" | "replay" | "browser" | "api" | "logs" | "code" | "manual",
   "steps": ["what you ran or did, in order"],
   "evidence": "a short excerpt of the output that shows the bug, or that it didn't happen",
   "reason": "required for not_attempted: why it couldn't be tried",
-  "qa_question": "required for not_reproduced: what to ask QA, in plain words"
+  "qa_question": "for not_reproduced: what to ask QA, in plain words (required unless reviewer_ask is given)",
+  "reviewer_ask": "optional: what a developer can check that you couldn't, with the exact commands or queries",
+  "explanation": "required for works_as_designed: for QA, in plain words, what happened and why it's correct",
+  "follow_ups": ["optional: real problems the report points at that aren't the reported bug"]
 }"""
 
 
@@ -38,19 +47,30 @@ def problems(data) -> list[str]:
     if status != NOT_ATTEMPTED and data.get("method") not in METHODS:
         found.append(f"method must be one of {', '.join(METHODS)}")
     steps = data.get("steps")
-    if status != NOT_ATTEMPTED and not (isinstance(steps, list) and steps and all(isinstance(s, str) for s in steps)):
+    if status != NOT_ATTEMPTED and not _texts(steps):
         found.append("steps must be a non-empty list of strings")
     if status != NOT_ATTEMPTED and not _text(data.get("evidence")):
         found.append("evidence is required")
     if status == NOT_ATTEMPTED and not _text(data.get("reason")):
         found.append("reason is required when the status is not_attempted")
-    if status == NOT_REPRODUCED and not _text(data.get("qa_question")):
-        found.append("qa_question is required when the status is not_reproduced")
+    if status == NOT_REPRODUCED and not (_text(data.get("qa_question")) or _text(data.get("reviewer_ask"))):
+        found.append("qa_question or reviewer_ask is required when the status is not_reproduced")
+    if status == WORKS_AS_DESIGNED and not _text(data.get("explanation")):
+        found.append("explanation is required when the status is works_as_designed")
+    if "reviewer_ask" in data and data["reviewer_ask"] is not None and not isinstance(data["reviewer_ask"], str):
+        found.append("reviewer_ask must be a string")
+    follow_ups = data.get("follow_ups")
+    if follow_ups is not None and not (isinstance(follow_ups, list) and all(isinstance(f, str) for f in follow_ups)):
+        found.append("follow_ups must be a list of strings")
     return found
 
 
 def _text(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _texts(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(s, str) for s in value)
 
 
 def check(ws: Path) -> str | None:

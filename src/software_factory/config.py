@@ -45,6 +45,8 @@ def ado_pat() -> str:
 # implementation outlasts the cache anyway, so the switch costs nothing extra
 PLAN_MODEL = os.getenv("SF_PLAN_MODEL", "opus")
 IMPLEMENT_MODEL = os.getenv("SF_IMPLEMENT_MODEL", "sonnet")
+# For a fix the planner or the reviewer sized large, which leaves more decisions to the implementer
+IMPLEMENT_MODEL_LARGE = os.getenv("SF_IMPLEMENT_MODEL_LARGE", "opus")
 REVIEW_MODEL = os.getenv("SF_REVIEW_MODEL", "sonnet")
 
 MAX_CONCURRENT_RUNS = _int("SF_MAX_CONCURRENT_RUNS", 2)
