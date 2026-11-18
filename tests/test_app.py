@@ -473,17 +473,53 @@ def test_approving_without_the_box_leaves_the_browser_check_to_the_agent(client,
     assert store.get_issue("issue-1")["browser_check"] == 0
 
 
+def shot(ws: Path, folder: str, name: str) -> Path:
+    path = ws / "evidence" / folder / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x89PNG")
+    return path
+
+
 def test_plan_page_shows_verification_and_serves_only_listed_screenshots(client, ws):
     (ws / "verification.json").write_text(json.dumps({"status": "passed", "browser": {"done": True, "passed": True, "result": "Shows 12 days"}}))
-    (ws / "evidence").mkdir()
-    (ws / "evidence" / "after.png").write_bytes(b"\x89PNG")
+    shot(ws, "verification", "after.png")
     (ws / "secret.txt").write_text("no")
     page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
     assert "Verification" in page and "passed: Shows 12 days" in page
-    assert "/issue/issue-1/evidence/after.png" in page
-    assert client.get("/issue/issue-1/evidence/after.png", headers=AUTH).data == b"\x89PNG"
-    assert client.get("/issue/issue-1/evidence/..%2Fsecret.txt", headers=AUTH).status_code == 404
-    assert client.get("/issue/issue-1/evidence/other.png", headers=AUTH).status_code == 404
+    assert 'id="tab-verification" aria-controls="panel-verification" aria-selected="true"' in page
+    assert "/issue/issue-1/evidence/verification/after.png" in page
+    assert client.get("/issue/issue-1/evidence/verification/after.png", headers=AUTH).data == b"\x89PNG"
+    # Only what the evidence module lists for that stage
+    assert client.get("/issue/issue-1/evidence/reproduction/after.png", headers=AUTH).status_code == 404
+    assert client.get("/issue/issue-1/evidence/verification/other.png", headers=AUTH).status_code == 404
+    assert client.get("/issue/issue-1/evidence/other/after.png", headers=AUTH).status_code == 404
+    assert client.get("/issue/issue-1/evidence/verification/..%2F..%2Fsecret.txt", headers=AUTH).status_code == 404
+    assert client.get("/issue/issue-1/evidence/..%2F..%2Fsecret.txt", headers=AUTH).status_code == 404
+
+
+def test_a_planners_screenshot_is_never_shown_as_verification(client, ws):
+    shot(ws, "reproduction", "repro.png")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert 'id="tab-verification"' not in page
+    assert 'id="tab-plan" aria-controls="panel-plan" aria-selected="true"' in page
+    assert 'id="tab-reproduction"' in page and "/issue/issue-1/evidence/reproduction/repro.png" in page
+    assert client.get("/issue/issue-1/evidence/verification/repro.png", headers=AUTH).status_code == 404
+
+
+def test_a_screenshot_without_verification_json_is_not_verification(client, ws):
+    # The implementer took it, but hasn't recorded its checks yet
+    shot(ws, "verification", "after.png")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert 'id="tab-verification"' not in page and "after.png" not in page
+
+
+def test_a_flat_evidence_folder_from_before_the_split_shows_as_reproduction(client, ws):
+    (ws / "evidence").mkdir()
+    (ws / "evidence" / "old.png").write_bytes(b"\x89PNG")
+    page = client.get("/issue/issue-1/plan", headers=AUTH).get_data(as_text=True)
+    assert 'id="tab-verification"' not in page
+    assert "/issue/issue-1/evidence/reproduction/old.png" in page
+    assert client.get("/issue/issue-1/evidence/reproduction/old.png", headers=AUTH).data == b"\x89PNG"
 
 
 def test_metrics_page(client, ws):

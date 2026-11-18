@@ -51,7 +51,8 @@
             <pre class="sf-tx-pre" data-clamp>{{ call.input.content }}</pre>
             {% if call.is_error %}{{ output_block(call) }}{% endif %}
         {% elif call.kind == "read" and images.get(call.id) %}
-            <a href="{{ url_for('evidence_file', issue_id=issue.id, name=images[call.id]) }}"><img class="sf-tx-shot" src="{{ url_for('evidence_file', issue_id=issue.id, name=images[call.id]) }}" alt="Screenshot {{ images[call.id] }}" loading="lazy"></a>
+            {% set stage, shot = images[call.id] %}
+            <a href="{{ url_for('evidence_file', issue_id=issue.id, stage=stage, name=shot) }}"><img class="sf-tx-shot" src="{{ url_for('evidence_file', issue_id=issue.id, stage=stage, name=shot) }}" alt="Screenshot {{ shot }}" loading="lazy"></a>
         {% elif call.kind == "read" %}
             {{ output_block(call, "Contents") }}
         {% elif call.kind == "agent" %}

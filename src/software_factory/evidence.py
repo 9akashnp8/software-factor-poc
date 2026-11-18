@@ -2,15 +2,22 @@
 
 Built from the planner's reproduction.json, the implementer's verification.json (with the
 factory's own re-run of the reproducing test) and the replays in replays/.
+
+Screenshots are kept by the stage that took them: the planner's, from reproducing the bug, in
+evidence/reproduction/, and those of the agents that fix and check it in evidence/verification/.
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 
-from software_factory import reproduction
+from software_factory import reproduction, store
 
 VERIFICATION_FILE = "verification.json"
 EVIDENCE_DIR = "evidence"
+REPRODUCTION = "reproduction"
+VERIFICATION = "verification"
+STAGES = (REPRODUCTION, VERIFICATION)
 REPLAYS_DIR = "replays"
 SCREENSHOT_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
 # Table cells stay on one line and short; the full text is in the workspace
@@ -110,18 +117,78 @@ def table(ws: Path, for_pr: bool = True) -> str | None:
     lines += [f"| {check} | {before} | {after} |" for check, before, after in found]
     status = checks.get("status", "unknown").replace("_", " ")
     lines += ["", f"Verification: **{status}**."]
-    if for_pr and (shots := screenshots(ws)):
-        lines.append(f"{len(shots)} screenshot{'s' if len(shots) != 1 else ''} on the plan page.")
+    if for_pr:
+        before, after = len(screenshots(ws, REPRODUCTION)), len(screenshots(ws, VERIFICATION))
+        if before or after:
+            lines.append(
+                f"Screenshots on the plan page: {_count(before)} from reproducing the bug,"
+                f" {_count(after)} from checking the fix."
+            )
     return "\n".join(lines)
 
 
-def screenshots(ws: Path) -> list[str]:
-    """Screenshot file names in the evidence folder, oldest first."""
-    folder = ws / EVIDENCE_DIR
+def _count(n: int) -> str:
+    return str(n) if n else "none"
+
+
+def stage_dir(ws: Path, stage: str) -> Path:
+    """Where a stage's browser saves its screenshots."""
+    if stage not in STAGES:
+        raise ValueError(f"unknown evidence stage {stage!r}")
+    return ws / EVIDENCE_DIR / stage
+
+
+def _images(folder: Path) -> list[Path]:
     if not folder.is_dir():
         return []
-    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in SCREENSHOT_SUFFIXES]
-    return [p.name for p in sorted(files, key=lambda p: p.stat().st_mtime)]
+    return [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in SCREENSHOT_SUFFIXES]
+
+
+def _approved_at(ws: Path) -> float | None:
+    """When the plan was last approved, the line between the planner's screenshots and the
+    implementer's; None when it never was."""
+    approvals = [e["at"] for e in store.events(ws.name) if e["to_status"] == store.IMPLEMENT_QUEUED]
+    return datetime.fromisoformat(approvals[-1]).timestamp() if approvals else None
+
+
+def _legacy(ws: Path, stage: str) -> list[Path]:
+    """A stage's share of the one flat evidence/ folder workspaces had before the split.
+
+    With nothing verified yet, all of it is the planner's. Once something is, what was saved
+    after the plan's approval is the implementer's; with no approval to tell them apart,
+    nothing counts as verification.
+    """
+    files = _images(ws / EVIDENCE_DIR)
+    if not files:
+        return []
+    approved = _approved_at(ws) if verification(ws) is not None else None
+
+    def stage_of(p: Path) -> str:
+        return VERIFICATION if approved is not None and p.stat().st_mtime >= approved else REPRODUCTION
+
+    return [p for p in files if stage_of(p) == stage]
+
+
+def _shots(ws: Path, stage: str) -> dict[str, Path]:
+    """A stage's screenshots by file name, oldest first."""
+    files = sorted(_images(stage_dir(ws, stage)) + _legacy(ws, stage), key=lambda p: p.stat().st_mtime)
+    found: dict[str, Path] = {}
+    for path in files:
+        found.setdefault(path.name, path)
+    return found
+
+
+def screenshots(ws: Path, stage: str) -> list[str]:
+    """File names of the screenshots a stage took, oldest first."""
+    return list(_shots(ws, stage))
+
+
+def screenshot_path(ws: Path, stage: str, name: str) -> Path | None:
+    """The file behind a screenshot that screenshots() lists; None for anything else, so no
+    request can reach a file outside the evidence folders."""
+    if stage not in STAGES:
+        return None
+    return _shots(ws, stage).get(name)
 
 
 def reproduced_sentence(ws: Path) -> str | None:

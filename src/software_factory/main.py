@@ -40,7 +40,7 @@ from software_factory import (
     review_comments,
     store,
 )
-from software_factory.evidence import EVIDENCE_DIR, VERIFICATION_FILE
+from software_factory.evidence import REPRODUCTION, VERIFICATION, VERIFICATION_FILE
 from software_factory.config import ADO_API_VERSION, ADO_REPO_API, ADO_REPO_URL, BASE_BRANCH
 from software_factory.environment import agent_env, branch_name, fetch_base, prepare_worktree, stop_servers
 from software_factory.langfuse_client import fetch_conversation
@@ -109,8 +109,8 @@ Workflow:
 
 While planning:
 - You run in plan mode, which stops you editing the repo, not reproducing the bug. Running
-  `$SF_REPLAY`, tests and the app, and writing under $SF_WORKSPACE (replays/, evidence/,
-  reproduction.json, assessment.json), are allowed and expected. Try the reproduction before deciding it can't
+  `$SF_REPLAY`, tests and the app, and writing under $SF_WORKSPACE (replays/,
+  evidence/reproduction/, reproduction.json, assessment.json), are allowed and expected. Try the reproduction before deciding it can't
   be done; only if a command is actually denied, record "not_attempted" with the reason.
   Describe source changes in the plan; don't make them.
 - When you're asked to write or revise a plan, end the same way every time: write
@@ -911,7 +911,7 @@ def planning_options(issue, worktree: Path, ws: Path, answering: bool = False, *
         hooks=NO_PUSH_HOOKS,
         cwd=worktree,
         env=agent_env(issue),
-        mcp_servers=mcp_servers(ws),
+        mcp_servers=mcp_servers(ws, REPRODUCTION),
         can_use_tool=plan_phase_can_use_tool(issue["id"], ws, answering),
         **extra,
     )
@@ -927,18 +927,22 @@ def implementation_options(issue, worktree: Path, **extra) -> ClaudeAgentOptions
         hooks=NO_PUSH_HOOKS,
         cwd=worktree,
         env=agent_env(issue),
-        mcp_servers=mcp_servers(store.issue_dir(issue["id"])),
+        mcp_servers=mcp_servers(store.issue_dir(issue["id"]), VERIFICATION),
         **extra,
     )
 
 
-def mcp_servers(ws: Path) -> dict:
+def mcp_servers(ws: Path, stage: str) -> dict:
     """The tools agents get besides Claude Code's own, when configured: a headless browser,
-    and the factory's own tools (the app's logs), which run in this process."""
+    and the factory's own tools (the app's logs), which run in this process.
+
+    stage is evidence.REPRODUCTION for the planner, evidence.VERIFICATION for the agents that
+    fix and check the bug: each saves its browser output in its own folder."""
     servers = {}
     if config.PLAYWRIGHT_MCP:
-        # Screenshots land in the workspace, where the plan page and the PR evidence find them
-        npx = [config.PLAYWRIGHT_MCP, "--headless", "--isolated", "--output-dir", str(ws / EVIDENCE_DIR)]
+        # Screenshots land in the workspace, where the plan page and the PR evidence find them,
+        # in the stage's own folder so a planner's screenshot is never shown as proof of the fix
+        npx = [config.PLAYWRIGHT_MCP, "--headless", "--isolated", "--output-dir", str(evidence.stage_dir(ws, stage))]
         # npx is a .cmd script on Windows, which only a shell can start
         command, args = ("cmd", ["/c", "npx", "-y", *npx]) if os.name == "nt" else ("npx", ["-y", *npx])
         servers["playwright"] = {"type": "stdio", "command": command, "args": args}

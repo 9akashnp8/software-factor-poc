@@ -141,9 +141,9 @@ def test_agents_never_see_lokis_credentials(monkeypatch):
 
 def test_agents_get_the_log_tool_only_when_loki_is_set(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "LOKI_URL", "")
-    assert "factory" not in main.mcp_servers(tmp_path)
+    assert "factory" not in main.mcp_servers(tmp_path, "reproduction")
     monkeypatch.setattr(config, "LOKI_URL", "http://loki.test")
-    assert main.mcp_servers(tmp_path)["factory"]["type"] == "sdk"
+    assert main.mcp_servers(tmp_path, "verification")["factory"]["type"] == "sdk"
 
 
 def test_triage_prefetches_logs_into_the_prompt(monkeypatch, tmp_path):
