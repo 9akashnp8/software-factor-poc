@@ -126,8 +126,22 @@ def test_paths_read_relative_to_the_worktree_or_the_workspace(tmp_path):
     )
     calls = transcripts.parse(path, ws)["calls"]
     assert [c.title for c in calls] == ["a/b.py", "workspace/evidence/shot.png"]
-    assert transcripts.evidence_image(calls[1], ws, ["shot.png"]) == "shot.png"
-    assert transcripts.evidence_image(calls[1], ws, []) is None
+    # A workspace from before the split, with one flat evidence folder
+    assert transcripts.evidence_image(calls[1], ws, {"reproduction": ["shot.png"], "verification": []}) == ("reproduction", "shot.png")
+    assert transcripts.evidence_image(calls[1], ws, {"reproduction": [], "verification": []}) is None
+
+
+def test_a_screenshot_read_from_a_stage_folder_belongs_to_that_stage(tmp_path):
+    ws = tmp_path / "bug_workspace" / "issue-1"
+    path = write(
+        tmp_path / "1-implement.jsonl",
+        (0, head()),
+        (1, said(ToolUseBlock("r1", "Read", {"file_path": f"{ws}/evidence/verification/after.png"}))),
+    )
+    (call,) = transcripts.parse(path, ws)["calls"]
+    shots = {"reproduction": ["after.png"], "verification": ["after.png"]}
+    assert transcripts.evidence_image(call, ws, shots) == ("verification", "after.png")
+    assert transcripts.evidence_image(call, ws, {"reproduction": ["after.png"], "verification": []}) is None
 
 
 def test_a_long_output_is_cut_with_a_count_of_the_rest(tmp_path):
