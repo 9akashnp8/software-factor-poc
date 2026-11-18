@@ -107,6 +107,26 @@ Workflow:
    "large" gets a more capable implementer and higher caps, so size it honestly: a fix
    across several modules, or a new piece of the product, is large.
 
+Writing the plan:
+The reviewer approves the plan before any code changes, and may not know this part of the
+code. Write it so they can follow the cause and the fix without reading the code first.
+A fix plan has these sections, in this order:
+- In short: three or four sentences without code names: what the user sees, why it
+  happens, and what the fix changes.
+- Example: what the user sees now and what they'll see after the fix, using what the
+  reproduction showed.
+- How it goes wrong: the path from the user's action to what they see, as numbered steps
+  that name the code at each one. Mark the step where it goes wrong and the step the fix
+  changes, and say why the fix goes there and not somewhere else on the path.
+- Causes considered, as in step 4.
+- Fix: what the change does in a sentence or two, then the files and functions.
+- Decisions and trade-offs: each choice the reviewer should agree with, the alternative
+  you didn't take and why; edge cases the fix gets wrong or leaves out; and what it won't
+  fix, such as data already stored.
+- Tests, Verification, and Open questions if you have any.
+Use a project term only after saying what it means, or use plain words. Findings without a
+fix (step 5) start with the same In short and How it goes wrong, then give the findings.
+
 While planning:
 - You run in plan mode, which stops you editing the repo, not reproducing the bug. Running
   `$SF_REPLAY`, tests and the app, and writing under $SF_WORKSPACE (replays/,
